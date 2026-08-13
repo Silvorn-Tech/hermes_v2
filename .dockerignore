@@ -1,0 +1,30 @@
+# Version control and automation metadata
+.git
+.github
+
+# Local environments and tool caches
+.venv
+venv
+env
+__pycache__/
+**/__pycache__/
+.pytest_cache
+.ruff_cache
+
+# Local configuration and secrets
+.env
+*.env
+*.key
+*.pem
+secret*
+credentials*
+
+# Generated files and editor metadata
+build
+dist
+*.egg-info
+.idea
+.vscode
+*.py[cod]
+*.swp
+*.swo
