@@ -1,0 +1,12 @@
+services:
+  hermes-v2:
+    container_name: hermes-v2
+    image: ghcr.io/silvorn-tech/hermes_v2:latest
+    restart: unless-stopped
+    env_file:
+      - .env
+    logging:
+      driver: local
+      options:
+        max-size: "10m"
+        max-file: "3"
