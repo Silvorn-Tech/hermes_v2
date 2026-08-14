@@ -14,7 +14,6 @@ from hermes_v2.api.app import app as api_app
 logger = logging.getLogger(__name__)
 
 
-
 class HermesRuntime:
     """Long-running runtime for the Hermes application."""
 
