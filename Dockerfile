@@ -5,8 +5,9 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-COPY pyproject.toml README.md ./
+COPY pyproject.toml README.md alembic.ini ./
 COPY src ./src
+COPY alembic ./alembic
 
 RUN pip install --no-cache-dir . \
     && useradd --create-home --shell /usr/sbin/nologin hermes \
