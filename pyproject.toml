@@ -13,6 +13,8 @@ authors = [{ name = "Hermes v2 Contributors" }]
 dependencies = [
     "psycopg[binary]>=3.2",
     "SQLAlchemy>=2.0",
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
 ]
 
 [project.scripts]
@@ -23,6 +25,7 @@ dev = [
     "alembic>=1.13",
     "pytest>=8.0",
     "ruff>=0.6",
+    "httpx2>=0.28.0",
 ]
 
 [tool.setuptools]

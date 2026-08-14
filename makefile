@@ -4,6 +4,9 @@ install:
 	pip install -e ".[dev]"
 
 run:
+	python -m hermes_v2.runtime
+
+cli:
 	python -m hermes_v2.cli
 
 test:
@@ -24,7 +27,13 @@ docker-build:
 	docker build -t hermes-v2:local .
 
 docker-run:
-	docker run --rm hermes-v2:local
+	docker run --rm \
+		--name hermes-runtime-test \
+		-p 8000:8000 \
+		hermes-v2:local
+		
+docker-clean:
+	docker rm -f hermes-runtime-test 2>/dev/null || true
 
 bootstrap-admin:
 	set -a; . ./.env.dev; set +a; python -m hermes_v2.cli bootstrap-admin
