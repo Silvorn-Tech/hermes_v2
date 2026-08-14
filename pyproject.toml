@@ -18,6 +18,9 @@ dependencies = [
 [project.scripts]
 hermes = "hermes_v2.cli:main"
 
+[project.scripts]
+hermes = "hermes_v2.cli:main"
+
 [project.optional-dependencies]
 dev = [
     "alembic>=1.13",
