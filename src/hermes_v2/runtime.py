@@ -1,7 +1,7 @@
 """Hermes v2 long-running application runtime."""
 
 from __future__ import annotations
-
+import os
 import logging
 import signal
 import threading
@@ -14,6 +14,7 @@ from hermes_v2.api.app import app as api_app
 logger = logging.getLogger(__name__)
 
 
+
 class HermesRuntime:
     """Long-running runtime for the Hermes application."""
 
@@ -21,6 +22,7 @@ class HermesRuntime:
         self._stop_event = threading.Event()
         self._application = application or api_app
         self._server: uvicorn.Server | None = None
+        self._host = os.getenv("HERMES_HOST", "0.0.0.0")
 
     def start(self) -> None:
         logger.info("Hermes runtime starting")
@@ -30,7 +32,7 @@ class HermesRuntime:
 
         config = uvicorn.Config(
             app=self._application,
-            host="0.0.0.0",
+            host=self._host,
             port=8000,
             log_level="info",
         )
