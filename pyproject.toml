@@ -14,6 +14,7 @@ dependencies = [
     "psycopg[binary]>=3.2",
     "SQLAlchemy>=2.0",
     "fastapi>=0.115",
+    "alembic>=1.13",
     "uvicorn[standard]>=0.30",
 ]
 
@@ -22,7 +23,6 @@ hermes = "hermes_v2.cli:main"
 
 [project.optional-dependencies]
 dev = [
-    "alembic>=1.13",
     "bandit>=1.9",
     "pytest>=8.0",
     "ruff>=0.6",
