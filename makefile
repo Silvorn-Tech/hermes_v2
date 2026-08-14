@@ -22,6 +22,7 @@ check:
 	pytest
 	ruff check .
 	ruff format --check .
+	bandit -r src/
 
 docker-build:
 	docker build -t hermes-v2:local .
@@ -31,9 +32,12 @@ docker-run:
 		--name hermes-runtime-test \
 		-p 8000:8000 \
 		hermes-v2:local
-		
+
 docker-clean:
 	docker rm -f hermes-runtime-test 2>/dev/null || true
 
 bootstrap-admin:
 	set -a; . ./.env.dev; set +a; python -m hermes_v2.cli bootstrap-admin
+
+security:
+	bandit -r src/

@@ -21,7 +21,10 @@ class HermesRuntime:
         self._stop_event = threading.Event()
         self._application = application or api_app
         self._server: uvicorn.Server | None = None
-        self._host = os.getenv("HERMES_HOST", "0.0.0.0")
+        self._host = os.getenv(
+            "HERMES_HOST",
+            "0.0.0.0",  # nosec B104 - required for Docker container networking
+        )
 
     def start(self) -> None:
         logger.info("Hermes runtime starting")
