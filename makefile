@@ -19,10 +19,10 @@ format:
 	ruff format .
 
 check:
-	pytest
-	ruff check .
-	ruff format --check .
-	bandit -r src/
+	set -a; . ./.env.dev; set +a; pytest
+	set -a; . ./.env.dev; set +a; ruff check .
+	set -a; . ./.env.dev; set +a; ruff format --check .
+	set -a; . ./.env.dev; set +a; bandit -r src/
 
 docker-build:
 	docker build -t hermes-v2:local .

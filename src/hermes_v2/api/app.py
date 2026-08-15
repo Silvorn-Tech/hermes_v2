@@ -1,4 +1,6 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+
+from hermes_v2.auth.oauth import google_callback, google_login
 
 app = FastAPI(
     title="Hermes v2",
@@ -9,3 +11,15 @@ app = FastAPI(
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@app.get("/auth/google/login")
+async def login() -> object:
+    return await google_login()
+
+
+@app.get("/auth/google/callback")
+async def callback(
+    request: Request, code: str | None = None, state: str | None = None
+) -> object:
+    return await google_callback(request, code=code, state=state)
