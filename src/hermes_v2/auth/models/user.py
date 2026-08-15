@@ -16,6 +16,7 @@ from hermes_v2.database.connection import Base
 if TYPE_CHECKING:
     from hermes_v2.auth.models.identity import Identity
     from hermes_v2.auth.models.role import Role
+    from hermes_v2.auth.models.session import Session
 
 
 class UserStatus(str, enum.Enum):
@@ -69,6 +70,9 @@ class User(Base):
     last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     identities: Mapped[list["Identity"]] = relationship(
+        back_populates="user", cascade="all, delete-orphan"
+    )
+    sessions: Mapped[list["Session"]] = relationship(
         back_populates="user", cascade="all, delete-orphan"
     )
     roles: Mapped[list["Role"]] = relationship(

@@ -27,7 +27,7 @@ def session() -> Session:
         connection.execute(
             text(
                 "TRUNCATE TABLE role_permissions, user_roles, identities, "
-                "permissions, roles, users"
+                "sessions, permissions, roles, users"
             )
         )
 

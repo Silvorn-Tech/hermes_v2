@@ -32,11 +32,23 @@ def google_environment(monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
     class FakeSession:
-        def __enter__(self) -> SimpleNamespace:
-            return SimpleNamespace()
+        def __enter__(self) -> "FakeSession":
+            return self
 
         def __exit__(self, exc_type, exc_val, exc_tb) -> bool:
             return False
+
+        def add(self, *_args, **_kwargs) -> None:
+            return None
+
+        def flush(self) -> None:
+            return None
+
+        def commit(self) -> None:
+            return None
+
+        def rollback(self) -> None:
+            return None
 
     monkeypatch.setattr(
         "hermes_v2.auth.oauth._create_session_factory",
@@ -310,3 +322,176 @@ def test_callback_response_excludes_google_tokens_and_secrets(monkeypatch) -> No
     assert "client_secret" not in body
     assert "authorization_code" not in body
     assert response.text.lower().count("token") == 0
+
+
+def test_successful_callback_sets_hermes_session_cookie(monkeypatch) -> None:
+    client = TestClient(app)
+    login_response = client.get("/auth/google/login", follow_redirects=False)
+    state = _extract_state_from_redirect(login_response.headers["location"])
+
+    monkeypatch.setattr(
+        "hermes_v2.auth.oauth._exchange_google_code",
+        lambda code: {"id_token": "google-id-token"},
+    )
+    monkeypatch.setattr(
+        "hermes_v2.auth.oauth.verify_google_id_token",
+        lambda token: {
+            "sub": "google-sub-123",
+            "email": "cookie@example.com",
+            "email_verified": True,
+            "iss": "https://accounts.google.com",
+        },
+    )
+    monkeypatch.setattr(
+        "hermes_v2.auth.oauth.resolve_google_user",
+        lambda session, claims: SimpleNamespace(
+            id="user-cookie",
+            email="cookie@example.com",
+            display_name="Cookie User",
+            roles=[SimpleNamespace(name="USER")],
+        ),
+    )
+    monkeypatch.setenv("HERMES_COOKIE_SECURE", "false")
+
+    response = client.get(f"/auth/google/callback?code=example-code&state={state}")
+    set_cookie = response.headers.get("set-cookie", "")
+
+    assert response.status_code == 200
+    assert "hermes_session=" in set_cookie
+    assert "HttpOnly" in set_cookie
+    assert "samesite=lax" in set_cookie.lower()
+    assert "secure" not in set_cookie.lower()
+    assert "token" not in response.text.lower()
+
+
+def test_successful_callback_sets_secure_cookie_when_enabled(monkeypatch) -> None:
+    client = TestClient(app)
+    login_response = client.get("/auth/google/login", follow_redirects=False)
+    state = _extract_state_from_redirect(login_response.headers["location"])
+
+    monkeypatch.setattr(
+        "hermes_v2.auth.oauth._exchange_google_code",
+        lambda code: {"id_token": "google-id-token"},
+    )
+    monkeypatch.setattr(
+        "hermes_v2.auth.oauth.verify_google_id_token",
+        lambda token: {
+            "sub": "google-sub-456",
+            "email": "secure@example.com",
+            "email_verified": True,
+            "iss": "https://accounts.google.com",
+        },
+    )
+    monkeypatch.setattr(
+        "hermes_v2.auth.oauth.resolve_google_user",
+        lambda session, claims: SimpleNamespace(
+            id="user-secure",
+            email="secure@example.com",
+            display_name="Secure User",
+            roles=[SimpleNamespace(name="USER")],
+        ),
+    )
+    monkeypatch.setenv("HERMES_COOKIE_SECURE", "true")
+
+    response = client.get(f"/auth/google/callback?code=example-code&state={state}")
+    set_cookie = response.headers.get("set-cookie", "")
+
+    assert response.status_code == 200
+    assert "secure" in set_cookie.lower()
+
+
+def test_auth_me_requires_cookie(monkeypatch) -> None:
+    client = TestClient(app)
+
+    response = client.get("/auth/me")
+
+    assert response.status_code == 401
+
+
+def test_auth_me_accepts_valid_session(monkeypatch) -> None:
+    client = TestClient(app)
+
+    user = SimpleNamespace(
+        id="user-42",
+        email="me@example.com",
+        display_name="Current User",
+        roles=[SimpleNamespace(name="SUPER_ADMIN")],
+    )
+    monkeypatch.setattr(
+        "hermes_v2.auth.oauth.get_user_from_session",
+        lambda session, token: user,
+    )
+
+    response = client.get("/auth/me", cookies={"hermes_session": "valid-token"})
+
+    assert response.status_code == 200
+    assert response.json()["authenticated"] is True
+    assert response.json()["user"]["email"] == "me@example.com"
+    assert response.json()["user"]["roles"] == ["SUPER_ADMIN"]
+
+
+def test_auth_me_rejects_invalid_session(monkeypatch) -> None:
+    client = TestClient(app)
+    monkeypatch.setattr(
+        "hermes_v2.auth.oauth.get_user_from_session",
+        lambda session, token: None,
+    )
+
+    response = client.get("/auth/me", cookies={"hermes_session": "bad-token"})
+
+    assert response.status_code == 401
+
+
+def test_auth_me_rejects_revoked_session(monkeypatch) -> None:
+    client = TestClient(app)
+    monkeypatch.setattr(
+        "hermes_v2.auth.oauth.get_user_from_session",
+        lambda session, token: None,
+    )
+
+    response = client.get("/auth/me", cookies={"hermes_session": "revoked-token"})
+
+    assert response.status_code == 401
+
+
+def test_auth_me_rejects_disabled_user(monkeypatch) -> None:
+    client = TestClient(app)
+    monkeypatch.setattr(
+        "hermes_v2.auth.oauth.get_user_from_session",
+        lambda session, token: None,
+    )
+
+    response = client.get("/auth/me", cookies={"hermes_session": "disabled-token"})
+
+    assert response.status_code == 401
+
+
+def test_logout_revokes_and_clears_cookie(monkeypatch) -> None:
+    client = TestClient(app)
+    called = {"revoked": False}
+
+    def fake_revoke(session, token):
+        called["revoked"] = True
+        return True
+
+    monkeypatch.setattr("hermes_v2.auth.oauth.revoke_session", fake_revoke)
+    monkeypatch.setenv("HERMES_COOKIE_SECURE", "false")
+
+    response = client.post(
+        "/auth/logout",
+        cookies={"hermes_session": "token-to-revoke"},
+    )
+
+    assert response.status_code == 200
+    assert called["revoked"] is True
+    assert "hermes_session=" in response.headers.get("set-cookie", "")
+    assert "expires=" in response.headers.get("set-cookie", "").lower()
+
+
+def test_logout_is_idempotent_without_cookie(monkeypatch) -> None:
+    client = TestClient(app)
+
+    response = client.post("/auth/logout")
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok"}
