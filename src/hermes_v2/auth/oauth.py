@@ -186,11 +186,10 @@ async def google_callback(
     with session_factory() as database_session:
         user = resolve_google_user(database_session, claims)
         _, raw_token = create_session(database_session, user, get_session_ttl())
+        safe_user = serialize_authenticated_user(user)
         database_session.commit()
 
-    response = JSONResponse(
-        content={"authenticated": True, "user": serialize_authenticated_user(user)}
-    )
+    response = JSONResponse(content={"authenticated": True, "user": safe_user})
     response.set_cookie(
         key=get_session_cookie_name(),
         value=raw_token,
@@ -211,13 +210,12 @@ async def get_authenticated_user(request: Request) -> JSONResponse:
     session_factory = _create_session_factory()
     with session_factory() as database_session:
         user = get_user_from_session(database_session, raw_token)
+        if user is None:
+            raise HTTPException(status_code=401, detail="Authentication required.")
 
-    if user is None:
-        raise HTTPException(status_code=401, detail="Authentication required.")
+        safe_user = serialize_authenticated_user(user)
 
-    return JSONResponse(
-        content={"authenticated": True, "user": serialize_authenticated_user(user)}
-    )
+    return JSONResponse(content={"authenticated": True, "user": safe_user})
 
 
 async def logout_user(request: Request) -> JSONResponse:

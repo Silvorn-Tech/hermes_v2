@@ -9,6 +9,8 @@ from urllib.parse import parse_qs, urlparse
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import select, text
+from sqlalchemy.orm import sessionmaker
 
 os.environ.setdefault("GOOGLE_CLIENT_ID", "test-client-id")
 os.environ.setdefault("GOOGLE_CLIENT_SECRET", "test-client-secret")
@@ -19,6 +21,9 @@ os.environ.setdefault(
 
 from hermes_v2.api.app import app
 import hermes_v2.auth.oauth as oauth_module
+from hermes_v2.auth.models import Role, User
+from hermes_v2.auth.session import serialize_authenticated_user
+from hermes_v2.database.connection import create_engine_from_environment
 
 
 @pytest.fixture(autouse=True)
@@ -278,6 +283,40 @@ def test_successful_callback_returns_safe_user_response(monkeypatch) -> None:
 
     assert response.status_code == 200
     assert response.json() == expected
+
+
+def test_serialize_user_with_lazy_roles_while_session_is_active() -> None:
+    if not os.environ.get("DATABASE_URL"):
+        pytest.skip("DATABASE_URL is required for PostgreSQL integration tests")
+
+    engine = create_engine_from_environment()
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "TRUNCATE TABLE sessions, identities, user_roles, role_permissions, "
+                "permissions, roles, users"
+            )
+        )
+
+    session_factory = sessionmaker(bind=engine)
+    with session_factory() as database_session:
+        user = User(email="lazy-role-user@example.com")
+        role = Role(name="ADMIN")
+        user.roles.append(role)
+        database_session.add(user)
+        database_session.commit()
+
+        database_session.expire(user)
+        hydrated_user = database_session.scalar(
+            select(User).where(User.email == "lazy-role-user@example.com")
+        )
+        assert hydrated_user is not None
+        payload = serialize_authenticated_user(hydrated_user)
+
+        assert payload["email"] == "lazy-role-user@example.com"
+        assert payload["roles"] == ["ADMIN"]
+
+    engine.dispose()
 
 
 def test_callback_response_excludes_google_tokens_and_secrets(monkeypatch) -> None:

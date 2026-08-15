@@ -43,29 +43,35 @@ def bootstrap_super_admin(session: Session) -> uuid.UUID:
     """
     admin_email = normalized_admin_email_from_environment()
 
-    with session.begin():
-        super_admin = session.scalar(
-            select(Role).where(Role.name == SUPER_ADMIN_ROLE_NAME)
-        )
-        if super_admin is None or not super_admin.system_role:
-            message = "Protected SUPER_ADMIN role is missing or invalid"
-            raise BootstrapStateError(message)
+    if not session.in_transaction():
+        with session.begin():
+            return _bootstrap_super_admin_transaction(session, admin_email)
 
-        current_admins = session.scalars(
-            select(User).join(User.roles).where(Role.name == SUPER_ADMIN_ROLE_NAME)
-        ).all()
-        if any(user.email != admin_email for user in current_admins):
-            message = "SUPER_ADMIN is already assigned to a different user"
-            raise BootstrapStateError(message)
+    return _bootstrap_super_admin_transaction(session, admin_email)
 
-        user = session.scalar(select(User).where(User.email == admin_email))
-        if user is None:
-            user = User(email=admin_email, status=UserStatus.ACTIVE)
-            session.add(user)
-            session.flush()
 
-        if super_admin not in user.roles:
-            user.roles.append(super_admin)
+def _bootstrap_super_admin_transaction(session: Session, admin_email: str) -> uuid.UUID:
+    """Execute the protected admin bootstrap within the current transaction."""
+    super_admin = session.scalar(select(Role).where(Role.name == SUPER_ADMIN_ROLE_NAME))
+    if super_admin is None or not super_admin.system_role:
+        message = "Protected SUPER_ADMIN role is missing or invalid"
+        raise BootstrapStateError(message)
 
+    current_admins = session.scalars(
+        select(User).join(User.roles).where(Role.name == SUPER_ADMIN_ROLE_NAME)
+    ).all()
+    if any(user.email != admin_email for user in current_admins):
+        message = "SUPER_ADMIN is already assigned to a different user"
+        raise BootstrapStateError(message)
+
+    user = session.scalar(select(User).where(User.email == admin_email))
+    if user is None:
+        user = User(email=admin_email, status=UserStatus.ACTIVE)
+        session.add(user)
         session.flush()
-        return user.id
+
+    if super_admin not in user.roles:
+        user.roles.append(super_admin)
+
+    session.flush()
+    return user.id

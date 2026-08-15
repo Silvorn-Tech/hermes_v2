@@ -8,10 +8,12 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from hermes_v2.auth.bootstrap import (
     BootstrapConfigurationError,
+    BootstrapStateError,
     bootstrap_super_admin,
 )
 from hermes_v2.auth.models import Identity, Role, User, UserStatus, user_roles
-from hermes_v2.auth.seed import seed_authorization_data
+from hermes_v2.auth.models import Permission
+from hermes_v2.auth.seed import PERMISSION_CATALOG, seed_authorization_data
 from hermes_v2.database.connection import create_engine_from_environment
 
 pytestmark = pytest.mark.database
@@ -63,6 +65,33 @@ def test_invalid_admin_email_fails(
 
     with pytest.raises(BootstrapConfigurationError):
         bootstrap_super_admin(session)
+
+
+def test_seed_then_bootstrap_creates_full_auth_state(
+    session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    configure_admin(monkeypatch, "admin@example.com")
+
+    with session.begin():
+        seed_authorization_data(session)
+        bootstrap_super_admin(session)
+
+    assert session.scalar(select(func.count()).select_from(Permission)) == len(
+        PERMISSION_CATALOG
+    )
+    assert session.scalar(select(func.count()).select_from(Role)) == 1
+    assert session.scalar(select(func.count()).select_from(User)) == 1
+    assert session.scalar(select(func.count()).select_from(user_roles)) == 1
+
+    user = session.scalar(select(User).where(User.email == "admin@example.com"))
+    assert user is not None
+    assert [role.name for role in user.roles] == ["SUPER_ADMIN"]
+
+    super_admin = session.scalar(select(Role).where(Role.name == "SUPER_ADMIN"))
+    assert super_admin is not None
+    assert {permission.name for permission in super_admin.permissions} == set(
+        PERMISSION_CATALOG
+    )
 
 
 def test_bootstrap_creates_normalized_admin_with_super_admin_role(
@@ -124,3 +153,40 @@ def test_database_failure_rolls_back_new_user(
     monkeypatch.setattr(session, "flush", original_flush)
     session.rollback()
     assert session.scalar(select(func.count()).select_from(User)) == 0
+
+
+def test_conflicting_existing_super_admin_raises_bootstrap_state_error(
+    session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    configure_admin(monkeypatch, "admin@example.com")
+    seed_authorization_data(session)
+    existing_user = User(email="other@example.com", status=UserStatus.ACTIVE)
+    super_admin = session.scalar(select(Role).where(Role.name == "SUPER_ADMIN"))
+    assert super_admin is not None
+    existing_user.roles.append(super_admin)
+    session.add(existing_user)
+    session.commit()
+
+    with pytest.raises(BootstrapStateError, match="already assigned"):
+        bootstrap_super_admin(session)
+
+
+def test_seed_and_bootstrap_do_not_duplicate_records(
+    session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    configure_admin(monkeypatch, "admin@example.com")
+
+    with session.begin():
+        seed_authorization_data(session)
+        bootstrap_super_admin(session)
+
+    with session.begin():
+        seed_authorization_data(session)
+        bootstrap_super_admin(session)
+
+    assert session.scalar(select(func.count()).select_from(Permission)) == len(
+        PERMISSION_CATALOG
+    )
+    assert session.scalar(select(func.count()).select_from(Role)) == 1
+    assert session.scalar(select(func.count()).select_from(User)) == 1
+    assert session.scalar(select(func.count()).select_from(user_roles)) == 1
