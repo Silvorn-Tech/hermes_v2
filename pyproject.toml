@@ -17,6 +17,7 @@ dependencies = [
     "alembic>=1.13",
     "uvicorn[standard]>=0.30",
     "google-auth>=2.56,<3",
+    "requests>=2.32",
 ]
 
 [project.scripts]
