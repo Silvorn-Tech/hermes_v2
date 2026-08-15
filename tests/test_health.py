@@ -1,8 +1,9 @@
 """Basic package health checks."""
 
-from fastapi.testclient import TestClient
+import importlib
+import sys
 
-from hermes_v2.api.app import app
+from fastapi.testclient import TestClient
 
 
 def test_package_can_be_imported() -> None:
@@ -11,8 +12,23 @@ def test_package_can_be_imported() -> None:
     assert hermes_v2 is not None
 
 
-def test_health_endpoint_returns_ok() -> None:
-    client = TestClient(app)
+def test_app_imports_without_database_url(monkeypatch) -> None:
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    sys.modules.pop("hermes_v2.api.app", None)
+    sys.modules.pop("hermes_v2.auth.oauth", None)
+
+    app_module = importlib.import_module("hermes_v2.api.app")
+
+    assert app_module.app is not None
+
+
+def test_health_endpoint_returns_ok(monkeypatch) -> None:
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    sys.modules.pop("hermes_v2.api.app", None)
+    sys.modules.pop("hermes_v2.auth.oauth", None)
+
+    app_module = importlib.import_module("hermes_v2.api.app")
+    client = TestClient(app_module.app)
 
     response = client.get("/health")
 

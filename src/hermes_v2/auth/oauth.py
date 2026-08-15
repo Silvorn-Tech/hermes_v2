@@ -14,7 +14,7 @@ from urllib.parse import urlencode
 
 from fastapi import HTTPException, Request
 from fastapi.responses import RedirectResponse
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.orm import Session, sessionmaker
 
 from hermes_v2.auth.google import GoogleAuthenticationError, verify_google_id_token
 from hermes_v2.auth.service import resolve_google_user
@@ -93,11 +93,12 @@ def _build_google_authorization_url() -> str:
     return f"{_GOOGLE_AUTHORIZATION_URL}?{urlencode(params)}"
 
 
-SessionFactory = sessionmaker(
-    bind=create_engine_from_environment(),
-    autoflush=False,
-    expire_on_commit=False,
-)
+def _create_session_factory() -> sessionmaker[Session]:
+    return sessionmaker(
+        bind=create_engine_from_environment(),
+        autoflush=False,
+        expire_on_commit=False,
+    )
 
 
 def _exchange_google_code(code: str) -> dict[str, Any]:
@@ -172,7 +173,8 @@ async def google_callback(
             detail="Google authentication failed.",
         ) from exc
 
-    with SessionFactory() as session:
+    session_factory = _create_session_factory()
+    with session_factory() as session:
         user = resolve_google_user(session, claims)
 
     roles = [role.name for role in getattr(user, "roles", [])]

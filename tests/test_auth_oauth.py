@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib
 import os
 from types import SimpleNamespace
 from urllib.parse import parse_qs, urlparse
@@ -17,11 +18,12 @@ os.environ.setdefault(
 )
 
 from hermes_v2.api.app import app
-from hermes_v2.auth.oauth import state_store
+import hermes_v2.auth.oauth as oauth_module
 
 
 @pytest.fixture(autouse=True)
 def google_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("DATABASE_URL", raising=False)
     monkeypatch.setenv("GOOGLE_CLIENT_ID", "test-client-id")
     monkeypatch.setenv("GOOGLE_CLIENT_SECRET", "test-client-secret")
     monkeypatch.setenv(
@@ -36,7 +38,21 @@ def google_environment(monkeypatch: pytest.MonkeyPatch) -> None:
         def __exit__(self, exc_type, exc_val, exc_tb) -> bool:
             return False
 
-    monkeypatch.setattr("hermes_v2.auth.oauth.SessionFactory", FakeSession)
+    monkeypatch.setattr(
+        "hermes_v2.auth.oauth._create_session_factory",
+        lambda: FakeSession,
+    )
+
+
+def test_oauth_module_imports_without_database_url(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+
+    oauth_module = importlib.import_module("hermes_v2.auth.oauth")
+    reloaded = importlib.reload(oauth_module)
+
+    assert reloaded.state_store is not None
 
 
 def _extract_state_from_redirect(location: str) -> str:
@@ -66,7 +82,7 @@ def test_google_login_generates_state() -> None:
     state = _extract_state_from_redirect(response.headers["location"])
 
     assert state
-    assert state in state_store._entries
+    assert state in oauth_module.state_store._entries
 
 
 def test_state_is_not_predictable() -> None:
@@ -79,7 +95,8 @@ def test_state_is_not_predictable() -> None:
     second_state = _extract_state_from_redirect(second.headers["location"])
 
     assert first_state != second_state
-    assert first_state != second_state
+    assert first_state in oauth_module.state_store._entries
+    assert second_state in oauth_module.state_store._entries
 
 
 def test_callback_without_state_is_rejected() -> None:
