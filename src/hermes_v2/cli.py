@@ -9,6 +9,7 @@ from hermes_v2.auth.bootstrap import (
     BootstrapStateError,
     bootstrap_super_admin,
 )
+from hermes_v2.auth.seed import seed_authorization_data
 from hermes_v2.database.connection import create_engine_from_environment
 
 
@@ -17,7 +18,9 @@ def bootstrap_admin() -> None:
     engine = create_engine_from_environment()
     try:
         with Session(engine) as session:
-            bootstrap_super_admin(session)
+            with session.begin():
+                seed_authorization_data(session)
+                bootstrap_super_admin(session)
     finally:
         engine.dispose()
 
