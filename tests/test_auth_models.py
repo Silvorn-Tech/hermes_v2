@@ -19,6 +19,7 @@ def test_auth_models_package_exports_expected_symbols_and_metadata() -> None:
         Identity,
         Permission,
         Role,
+        Session,
         User,
         role_permissions,
         user_roles,
@@ -27,17 +28,20 @@ def test_auth_models_package_exports_expected_symbols_and_metadata() -> None:
     from hermes_v2.auth.models.identity import Identity as IdentityFromModule
     from hermes_v2.auth.models.role import Role as RoleFromModule
     from hermes_v2.auth.models.permission import Permission as PermissionFromModule
+    from hermes_v2.auth.models.session import Session as SessionFromModule
 
     assert User is UserFromModule
     assert Identity is IdentityFromModule
     assert Role is RoleFromModule
     assert Permission is PermissionFromModule
+    assert Session is SessionFromModule
 
     expected_tables = {
         "users",
         "identities",
         "roles",
         "permissions",
+        "sessions",
         "user_roles",
         "role_permissions",
     }
@@ -58,7 +62,7 @@ def session() -> Session:
         connection.execute(
             text(
                 "TRUNCATE TABLE role_permissions, user_roles, identities, "
-                "permissions, roles, users"
+                "sessions, permissions, roles, users"
             )
         )
 

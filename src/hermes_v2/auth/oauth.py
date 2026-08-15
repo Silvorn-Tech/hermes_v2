@@ -13,10 +13,19 @@ from typing import Any
 from urllib.parse import urlencode
 
 from fastapi import HTTPException, Request
-from fastapi.responses import RedirectResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 from sqlalchemy.orm import Session, sessionmaker
 
 from hermes_v2.auth.google import GoogleAuthenticationError, verify_google_id_token
+from hermes_v2.auth.session import (
+    create_session,
+    get_session_cookie_name,
+    get_session_ttl,
+    get_user_from_session,
+    is_cookie_secure,
+    revoke_session,
+    serialize_authenticated_user,
+)
 from hermes_v2.auth.service import resolve_google_user
 from hermes_v2.database.connection import create_engine_from_environment
 
@@ -143,8 +152,8 @@ async def google_callback(
     request: Request,
     code: str | None = None,
     state: str | None = None,
-) -> dict[str, Any]:
-    """Handle the Google callback and return a temporary authenticated response."""
+) -> JSONResponse:
+    """Handle the Google callback and create a Hermes session cookie."""
     if not state or not state.strip():
         raise HTTPException(status_code=400, detail="Missing state parameter.")
     if not state_store.consume(state):
@@ -174,17 +183,68 @@ async def google_callback(
         ) from exc
 
     session_factory = _create_session_factory()
-    with session_factory() as session:
-        user = resolve_google_user(session, claims)
+    with session_factory() as database_session:
+        user = resolve_google_user(database_session, claims)
+        _, raw_token = create_session(database_session, user, get_session_ttl())
+        database_session.commit()
 
-    roles = [role.name for role in getattr(user, "roles", [])]
-    safe_user: dict[str, Any] = {
-        "id": str(user.id),
-        "email": user.email,
-        "display_name": user.display_name or user.email,
-        "roles": roles,
-    }
-    return {"authenticated": True, "user": safe_user}
+    response = JSONResponse(
+        content={"authenticated": True, "user": serialize_authenticated_user(user)}
+    )
+    response.set_cookie(
+        key=get_session_cookie_name(),
+        value=raw_token,
+        httponly=True,
+        samesite="lax",
+        path="/",
+        secure=is_cookie_secure(),
+    )
+    return response
 
 
-__all__ = ["OAuthStateStore", "google_callback", "google_login", "state_store"]
+async def get_authenticated_user(request: Request) -> JSONResponse:
+    """Return the current authenticated user from the Hermes session cookie."""
+    raw_token = request.cookies.get(get_session_cookie_name())
+    if not raw_token:
+        raise HTTPException(status_code=401, detail="Authentication required.")
+
+    session_factory = _create_session_factory()
+    with session_factory() as database_session:
+        user = get_user_from_session(database_session, raw_token)
+
+    if user is None:
+        raise HTTPException(status_code=401, detail="Authentication required.")
+
+    return JSONResponse(
+        content={"authenticated": True, "user": serialize_authenticated_user(user)}
+    )
+
+
+async def logout_user(request: Request) -> JSONResponse:
+    """Revoke the current Hermes session and clear the cookie."""
+    raw_token = request.cookies.get(get_session_cookie_name())
+    response = JSONResponse({"status": "ok"})
+
+    if raw_token:
+        session_factory = _create_session_factory()
+        with session_factory() as database_session:
+            revoke_session(database_session, raw_token)
+            database_session.commit()
+
+    response.delete_cookie(
+        key=get_session_cookie_name(),
+        path="/",
+        secure=is_cookie_secure(),
+        samesite="lax",
+    )
+    return response
+
+
+__all__ = [
+    "OAuthStateStore",
+    "get_authenticated_user",
+    "google_callback",
+    "google_login",
+    "logout_user",
+    "state_store",
+]
