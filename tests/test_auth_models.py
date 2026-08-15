@@ -14,6 +14,40 @@ from hermes_v2.database.connection import create_engine_from_environment
 pytestmark = pytest.mark.database
 
 
+def test_auth_models_package_exports_expected_symbols_and_metadata() -> None:
+    from hermes_v2.auth.models import (
+        Identity,
+        Permission,
+        Role,
+        User,
+        role_permissions,
+        user_roles,
+    )
+    from hermes_v2.auth.models.user import User as UserFromModule
+    from hermes_v2.auth.models.identity import Identity as IdentityFromModule
+    from hermes_v2.auth.models.role import Role as RoleFromModule
+    from hermes_v2.auth.models.permission import Permission as PermissionFromModule
+
+    assert User is UserFromModule
+    assert Identity is IdentityFromModule
+    assert Role is RoleFromModule
+    assert Permission is PermissionFromModule
+
+    expected_tables = {
+        "users",
+        "identities",
+        "roles",
+        "permissions",
+        "user_roles",
+        "role_permissions",
+    }
+    assert {
+        table.name for table in User.__table__.metadata.tables.values()
+    } >= expected_tables
+    assert user_roles.name == "user_roles"
+    assert role_permissions.name == "role_permissions"
+
+
 @pytest.fixture()
 def session() -> Session:
     if not os.environ.get("DATABASE_URL"):

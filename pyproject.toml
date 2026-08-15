@@ -16,6 +16,7 @@ dependencies = [
     "fastapi>=0.115",
     "alembic>=1.13",
     "uvicorn[standard]>=0.30",
+    "google-auth>=2.56,<3",
 ]
 
 [project.scripts]
