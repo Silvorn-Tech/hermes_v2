@@ -63,6 +63,7 @@ class _FakeBinanceClient:
         # percentage against) don't spuriously reject in tests that aren't
         # specifically about an empty account.
         self.balances: list[dict] = [{"asset": "USDT", "free": "100000", "locked": "0"}]
+        self.balances_error: Exception | None = None
         self.trades: dict[str, list[dict]] = {}
         self.create_order_result: dict | Exception = {
             "symbol": "BTCUSDT",
@@ -97,6 +98,8 @@ class _FakeBinanceClient:
         return self.exchange_info[symbol]
 
     def get_balances(self) -> list[dict]:
+        if self.balances_error is not None:
+            raise self.balances_error
         return self.balances
 
     def get_trades(self, symbol: str) -> list[dict]:
@@ -320,6 +323,38 @@ def test_risk_rejection_when_a_limit_is_unconfigured(
     session.commit()
 
     assert result["status"] == "REJECTED"
+
+
+def test_risk_evaluation_failure_rejects_and_still_finalizes_idempotency(
+    monkeypatch: pytest.MonkeyPatch, session: Session
+) -> None:
+    """If gathering account state for RiskEngine itself fails (Binance
+    outage mid-flow), the order must still be rejected and the idempotency
+    reservation finalized — not left stuck at PROCESSING forever, which
+    would permanently block every future retry with this key."""
+    monkeypatch.setenv("TRADING_ENABLED", "true")
+    user = _make_user(session)
+    session.commit()
+    client = _FakeBinanceClient()
+    client.balances_error = BinanceRequestError("Binance is unreachable")
+    service = _make_service(session, client)
+
+    result = service.create_order(
+        user.id, "BTCUSDT", "BUY", "MARKET", Decimal("0.01"), None, "key-1"
+    )
+    session.commit()
+
+    assert result["status"] == "REJECTED"
+    order = session.scalars(select(Order)).one()
+    assert order.status == OrderStatus.REJECTED
+
+    # A retry with the same key must return the stored rejection, not hang
+    # forever behind an unfinalized reservation.
+    retry_result = service.create_order(
+        user.id, "BTCUSDT", "BUY", "MARKET", Decimal("0.01"), None, "key-1"
+    )
+    session.commit()
+    assert retry_result == result
 
 
 # --- successful order -----------------------------------------------------------

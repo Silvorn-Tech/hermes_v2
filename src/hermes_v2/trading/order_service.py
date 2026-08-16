@@ -276,9 +276,17 @@ class OrderService:
                 order, OrderEventType.VALIDATION_FAILED, validation.reason, audit_action
             )
 
-        risk_decision = self._evaluate_risk(
-            order, side, validation.estimated_notional_quote
-        )
+        try:
+            risk_decision = self._evaluate_risk(
+                order, side, validation.estimated_notional_quote
+            )
+        except BinanceError as exc:
+            return self._reject_order(
+                order,
+                OrderEventType.RISK_REJECTED,
+                f"Could not evaluate risk (account state unavailable): {exc}",
+                audit_action,
+            )
         if not risk_decision.approved:
             return self._reject_order(
                 order, OrderEventType.RISK_REJECTED, risk_decision.reason, audit_action
@@ -289,6 +297,10 @@ class OrderService:
         )
 
     def _evaluate_risk(self, order: Order, side: str, estimated_notional: Decimal):
+        """May raise BinanceError — the caller above must not let that
+        escape unhandled, or the idempotency reservation around this whole
+        flow would never get finalized (see idempotency.py's `finalize`
+        docstring: an unfinalized row blocks every future retry forever)."""
         risk_engine = RiskEngine(load_risk_limits())
         existing_position = self._positions_service.get_position(order.symbol)
         all_positions = self._positions_service.get_positions()
