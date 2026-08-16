@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import secrets
 import threading
@@ -29,6 +30,8 @@ from hermes_v2.auth.session import (
     serialize_authenticated_user,
 )
 from hermes_v2.database.connection import create_engine_from_environment
+
+logger = logging.getLogger(__name__)
 
 _GOOGLE_AUTHORIZATION_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 _GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"  # nosec B105
@@ -180,10 +183,32 @@ def _exchange_google_code(code: str) -> dict[str, Any]:
             body = response.read().decode("utf-8")
             return json.loads(body)
     except urllib.error.HTTPError as exc:
-        exc.read().decode("utf-8", errors="replace")
+        error_body = exc.read().decode("utf-8", errors="replace")
+        error_code = _extract_google_error_code(error_body)
+        logger.warning(
+            "Google token exchange failed: http_status=%s error=%s",
+            exc.code,
+            error_code,
+        )
         raise GoogleTokenExchangeError("Google token exchange failed") from exc
     except (urllib.error.URLError, ValueError, json.JSONDecodeError) as exc:
+        logger.warning("Google token exchange failed: %s", type(exc).__name__)
         raise GoogleTokenExchangeError("Google token exchange failed") from exc
+
+
+def _extract_google_error_code(error_body: str) -> str:
+    """Best-effort extraction of Google's `error` field for log correlation.
+
+    Deliberately drops everything else in the response: request parameters
+    are never echoed back into this field, but the rest of the body is not
+    worth the risk of logging verbatim.
+    """
+    try:
+        parsed = json.loads(error_body)
+    except (ValueError, json.JSONDecodeError):
+        return "unknown"
+    error_code = parsed.get("error") if isinstance(parsed, dict) else None
+    return error_code if isinstance(error_code, str) else "unknown"
 
 
 class GoogleTokenExchangeError(RuntimeError):
@@ -228,6 +253,7 @@ async def google_callback(
 
     return_to = state_store.consume(state)
     if return_to is None:
+        logger.warning("OAuth callback rejected: invalid or expired state token")
         raise HTTPException(status_code=400, detail="Invalid or expired state.")
 
     if request.query_params.get("error"):
@@ -254,12 +280,18 @@ async def google_callback(
     with session_factory() as database_session:
         try:
             user = resolve_google_user(database_session, claims)
-        except GoogleIdentityError:
+        except GoogleIdentityError as exc:
             database_session.rollback()
+            logger.info(
+                "Google identity denied: email=%s reason=%s",
+                claims.get("email"),
+                type(exc).__name__,
+            )
             return _redirect_with_status(return_to, "denied")
 
         _, raw_token = create_session(database_session, user, get_session_ttl())
         database_session.commit()
+        logger.info("Hermes session created: user_id=%s", user.id)
 
     response = _redirect_with_status(return_to, "success")
     response.set_cookie(
