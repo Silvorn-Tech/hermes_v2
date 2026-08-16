@@ -5,6 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import Response
 
+from hermes_v2.api.trading_routes import router as trading_router
 from hermes_v2.auth.oauth import (
     get_authenticated_user,
     google_callback,
@@ -66,8 +67,18 @@ app.add_middleware(
     allow_origins=_configured_allowed_origins(),
     allow_credentials=True,
     allow_methods=["GET", "POST"],
-    allow_headers=["Content-Type"],
+    allow_headers=["Content-Type", "Idempotency-Key"],
 )
+
+# Not app.include_router(trading_router): this FastAPI version wraps
+# included routers in a lazy _IncludedRouter that never appears in
+# app.routes, which would make trading_router's routes invisible to
+# tests/test_authorization.py's real_app.routes walk — the regression
+# guard that catches an unprotected mutating endpoint. Extending
+# app.router.routes directly with the already-built APIRoute objects
+# keeps every route eagerly visible there, exactly like the routes
+# defined directly on `app` below.
+app.router.routes.extend(trading_router.routes)
 
 
 @app.get("/health")

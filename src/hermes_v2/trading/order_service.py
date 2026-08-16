@@ -90,7 +90,7 @@ class PositionNotFoundError(OrderServiceError):
     """No held balance for this symbol — nothing to close."""
 
 
-def _order_response(order: Order) -> dict[str, Any]:
+def order_to_response(order: Order) -> dict[str, Any]:
     return {
         "id": str(order.id),
         "symbol": order.symbol,
@@ -351,7 +351,11 @@ class OrderService:
             None,
             reason,
         )
-        return {"order": _order_response(order), "status": "REJECTED", "reason": reason}
+        return {
+            "order": order_to_response(order),
+            "status": "REJECTED",
+            "reason": reason,
+        }
 
     def _submit_to_binance(
         self,
@@ -401,7 +405,7 @@ class OrderService:
             None,
         )
         return {
-            "order": _order_response(order),
+            "order": order_to_response(order),
             "status": order.status.value,
             "reason": None,
         }
@@ -441,7 +445,7 @@ class OrderService:
                 order.error_message,
             )
             return {
-                "order": _order_response(order),
+                "order": order_to_response(order),
                 "status": "FAILED",
                 "reason": order.error_message,
             }
@@ -468,7 +472,7 @@ class OrderService:
             "Confirmed after ambiguous failure",
         )
         return {
-            "order": _order_response(order),
+            "order": order_to_response(order),
             "status": order.status.value,
             "reason": None,
         }
@@ -507,7 +511,7 @@ class OrderService:
                 self._session,
                 reservation.key_row_id,
                 {
-                    "order": _order_response(order),
+                    "order": order_to_response(order),
                     "status": "REJECTED",
                     "reason": f"Order is {order.status.value}, not cancelable.",
                 },
@@ -557,7 +561,7 @@ class OrderService:
                 order.error_message,
             )
             response = {
-                "order": _order_response(order),
+                "order": order_to_response(order),
                 "status": "FAILED",
                 "reason": order.error_message,
             }
@@ -583,7 +587,7 @@ class OrderService:
             None,
         )
         response = {
-            "order": _order_response(order),
+            "order": order_to_response(order),
             "status": order.status.value,
             "reason": None,
         }
@@ -662,4 +666,5 @@ __all__ = [
     "OrderServiceError",
     "PositionNotFoundError",
     "TradingDisabledError",
+    "order_to_response",
 ]

@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from hermes_v2.auth.rate_limiting import reset_all_rate_limiters
+from hermes_v2.trading.rate_limiting import reset_trading_rate_limiters
 
 
 @pytest.fixture(autouse=True)
@@ -19,3 +20,4 @@ def _reset_hermes_rate_limits() -> None:
     since any test may exercise a rate-limited route incidentally.
     """
     reset_all_rate_limiters()
+    reset_trading_rate_limiters()
