@@ -1,6 +1,6 @@
 import os
 
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import Response
@@ -10,6 +10,13 @@ from hermes_v2.auth.oauth import (
     google_callback,
     google_login,
     logout_user,
+)
+from hermes_v2.auth.rate_limiting import (
+    CALLBACK_RATE_LIMITER,
+    LOGIN_RATE_LIMITER,
+    LOGOUT_RATE_LIMITER,
+    ME_RATE_LIMITER,
+    rate_limit,
 )
 from hermes_v2.auth.session import is_cookie_secure
 
@@ -69,24 +76,38 @@ def health() -> dict[str, str]:
 
 
 @app.get("/auth/google/login")
-async def login(return_to: str | None = None) -> object:
+async def login(
+    return_to: str | None = None,
+    _rate_limit: None = Depends(rate_limit(LOGIN_RATE_LIMITER, "auth.google.login")),
+) -> object:
     return await google_login(return_to)
 
 
 @app.get("/auth/google/callback")
 async def callback(
-    request: Request, code: str | None = None, state: str | None = None
+    request: Request,
+    code: str | None = None,
+    state: str | None = None,
+    _rate_limit: None = Depends(
+        rate_limit(CALLBACK_RATE_LIMITER, "auth.google.callback")
+    ),
 ) -> object:
     return await google_callback(request, code=code, state=state)
 
 
 @app.get("/auth/me")
-async def me(request: Request) -> object:
+async def me(
+    request: Request,
+    _rate_limit: None = Depends(rate_limit(ME_RATE_LIMITER, "auth.me")),
+) -> object:
     return await get_authenticated_user(request)
 
 
 @app.post("/auth/logout")
-async def logout(request: Request) -> object:
+async def logout(
+    request: Request,
+    _rate_limit: None = Depends(rate_limit(LOGOUT_RATE_LIMITER, "auth.logout")),
+) -> object:
     """Revoke the caller's own session.
 
     Deliberately not gated by `require_permission()`: this is a
