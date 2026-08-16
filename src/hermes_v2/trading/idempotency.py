@@ -52,15 +52,24 @@ def compute_request_hash(payload: dict[str, Any]) -> str:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
-def derive_binance_client_order_id(user_id: uuid.UUID, idempotency_key: str) -> str:
-    """Deterministic `newClientOrderId` for a given user + idempotency key.
+def derive_binance_client_order_id(
+    user_id: uuid.UUID, endpoint: str, idempotency_key: str
+) -> str:
+    """Deterministic `newClientOrderId` for a given user + endpoint +
+    idempotency key.
 
     Same inputs always produce the same output, so a retried request (same
     key) that somehow reached `BinanceClient.create_order` twice would send
     the identical `clientOrderId` both times — Binance itself then refuses
-    to create a second order for it.
+    to create a second order for it. Scoped by `endpoint` too, matching
+    `reserve()`'s own scoping — otherwise a caller reusing the same key
+    string for `POST /orders` and `POST /positions/{symbol}/close` (two
+    independent Hermes-level reservations) would collide on Binance's side
+    even though Hermes never intended them as the same request.
     """
-    digest = hashlib.sha256(f"{user_id}:{idempotency_key}".encode("utf-8")).hexdigest()
+    digest = hashlib.sha256(
+        f"{user_id}:{endpoint}:{idempotency_key}".encode("utf-8")
+    ).hexdigest()
     return f"{_CLIENT_ORDER_ID_PREFIX}{digest[:_CLIENT_ORDER_ID_HASH_LENGTH]}"
 
 

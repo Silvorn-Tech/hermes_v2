@@ -42,20 +42,34 @@ def test_compute_request_hash_differs_for_different_payloads() -> None:
 
 def test_derive_binance_client_order_id_is_deterministic() -> None:
     user_id = uuid.uuid4()
-    first = derive_binance_client_order_id(user_id, "my-key")
-    second = derive_binance_client_order_id(user_id, "my-key")
+    first = derive_binance_client_order_id(user_id, "POST /orders", "my-key")
+    second = derive_binance_client_order_id(user_id, "POST /orders", "my-key")
     assert first == second
 
 
 def test_derive_binance_client_order_id_differs_per_user() -> None:
     key = "same-key"
-    first = derive_binance_client_order_id(uuid.uuid4(), key)
-    second = derive_binance_client_order_id(uuid.uuid4(), key)
+    first = derive_binance_client_order_id(uuid.uuid4(), "POST /orders", key)
+    second = derive_binance_client_order_id(uuid.uuid4(), "POST /orders", key)
     assert first != second
 
 
+def test_derive_binance_client_order_id_differs_per_endpoint() -> None:
+    """The same key string used for create vs. close-position must not
+    collide on Binance's own duplicate-clientOrderId check."""
+    user_id = uuid.uuid4()
+    key = "same-key"
+    create_id = derive_binance_client_order_id(user_id, "POST /orders", key)
+    close_id = derive_binance_client_order_id(
+        user_id, "POST /positions/{symbol}/close", key
+    )
+    assert create_id != close_id
+
+
 def test_derive_binance_client_order_id_fits_binance_length_limit() -> None:
-    client_order_id = derive_binance_client_order_id(uuid.uuid4(), "a-fairly-long-key")
+    client_order_id = derive_binance_client_order_id(
+        uuid.uuid4(), "POST /orders", "a-fairly-long-key"
+    )
     assert len(client_order_id) <= 36
     assert client_order_id.startswith("hm-")
 
