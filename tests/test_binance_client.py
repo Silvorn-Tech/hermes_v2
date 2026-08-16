@@ -19,6 +19,7 @@ from hermes_v2.integrations.binance import (
     BinanceClient,
     BinanceConfigurationError,
     BinanceError,
+    BinanceRateLimitError,
     BinanceRequestError,
 )
 
@@ -55,9 +56,10 @@ class _FakeSession:
         self._exception = exception
         self.calls: list[dict] = []
 
-    def get(self, url, params=None, headers=None, timeout=None):
+    def _record_and_respond(self, method, url, params=None, headers=None, timeout=None):
         self.calls.append(
             {
+                "method": method,
                 "url": url,
                 "params": dict(params or {}),
                 "headers": dict(headers or {}),
@@ -67,6 +69,15 @@ class _FakeSession:
         if self._exception is not None:
             raise self._exception
         return self._response
+
+    def get(self, url, params=None, headers=None, timeout=None):
+        return self._record_and_respond("GET", url, params, headers, timeout)
+
+    def post(self, url, params=None, headers=None, timeout=None):
+        return self._record_and_respond("POST", url, params, headers, timeout)
+
+    def delete(self, url, params=None, headers=None, timeout=None):
+        return self._record_and_respond("DELETE", url, params, headers, timeout)
 
 
 def _make_client(session: _FakeSession) -> BinanceClient:
@@ -314,18 +325,22 @@ def test_credentials_never_appear_in_exceptions_or_logs(
     assert _FAKE_API_SECRET not in caplog.text
 
 
-def test_client_exposes_no_write_methods() -> None:
+def test_client_exposes_no_write_beyond_orders() -> None:
+    """Whitelist, not an allowlist-by-omission: exactly these ten methods may
+    exist on BinanceClient. Funds-movement methods (withdraw, transfer,
+    deposit address management) must never be added here, in any phase."""
     forbidden_names = {
-        "create_order",
-        "cancel_order",
+        "withdraw",
+        "transfer",
         "new_order",
         "place_order",
         "buy",
         "sell",
-        "withdraw",
-        "transfer",
         "delete_order",
         "cancel_all_orders",
+        "deposit_address",
+        "get_deposit_address",
+        "sub_account_transfer",
     }
     exposed = {name for name in dir(BinanceClient) if not name.startswith("_")}
     assert exposed & forbidden_names == set()
@@ -335,6 +350,11 @@ def test_client_exposes_no_write_methods() -> None:
         "get_balances",
         "get_market_data",
         "get_open_orders",
+        "create_order",
+        "cancel_order",
+        "get_order",
+        "get_trades",
+        "get_exchange_info",
     }
 
 
@@ -349,3 +369,321 @@ def test_signature_is_a_valid_query_string_component() -> None:
     sent_params = session.calls[0]["params"]
     assert "signature" in sent_params
     assert dict(parse_qsl(f"symbol={sent_params['symbol']}"))["symbol"] == "BTCUSDT"
+
+
+# --- Phase 2: write methods -------------------------------------------------
+
+
+def test_create_order_market_sends_no_price_and_returns_curated_fields() -> None:
+    payload = {
+        "symbol": "BTCUSDT",
+        "orderId": 555,
+        "clientOrderId": "hm-abc123",
+        "transactTime": 1700000000000,
+        "price": "0.00000000",
+        "origQty": "0.01",
+        "executedQty": "0.01",
+        "cummulativeQuoteQty": "500.00",
+        "status": "FILLED",
+        "timeInForce": "GTC",
+        "type": "MARKET",
+        "side": "BUY",
+        "fills": [{"price": "50000", "qty": "0.01"}],  # must NOT leak into result
+    }
+    session = _FakeSession(response=_FakeResponse(json_data=payload))
+    client = _make_client(session)
+
+    result = client.create_order(
+        symbol="BTCUSDT",
+        side="BUY",
+        order_type="MARKET",
+        quantity="0.01",
+        client_order_id="hm-abc123",
+    )
+
+    assert result == {
+        "symbol": "BTCUSDT",
+        "order_id": 555,
+        "client_order_id": "hm-abc123",
+        "status": "FILLED",
+        "side": "BUY",
+        "type": "MARKET",
+        "price": "0.00000000",
+        "orig_qty": "0.01",
+        "executed_qty": "0.01",
+        "cummulative_quote_qty": "500.00",
+        "transact_time": 1700000000000,
+    }
+    call = session.calls[0]
+    assert call["method"] == "POST"
+    assert call["headers"] == {"X-MBX-APIKEY": _FAKE_API_KEY}
+    assert "price" not in call["params"]
+    assert "timeInForce" not in call["params"]
+    assert call["params"]["newClientOrderId"] == "hm-abc123"
+
+
+def test_create_order_limit_sends_price_and_time_in_force() -> None:
+    session = _FakeSession(
+        response=_FakeResponse(json_data={"symbol": "BTCUSDT", "status": "NEW"})
+    )
+    client = _make_client(session)
+
+    client.create_order(
+        symbol="BTCUSDT",
+        side="SELL",
+        order_type="LIMIT",
+        quantity="0.01",
+        price="60000",
+    )
+
+    sent_params = session.calls[0]["params"]
+    assert sent_params["price"] == "60000"
+    assert sent_params["timeInForce"] == "GTC"
+    assert sent_params["type"] == "LIMIT"
+
+
+def test_cancel_order_requires_an_identifier() -> None:
+    client = _make_client(_FakeSession())
+
+    with pytest.raises(ValueError, match="order_id or client_order_id"):
+        client.cancel_order(symbol="BTCUSDT")
+
+
+def test_cancel_order_by_order_id_returns_curated_fields() -> None:
+    payload = {
+        "symbol": "BTCUSDT",
+        "orderId": 555,
+        "clientOrderId": "hm-abc123",
+        "status": "CANCELED",
+        "origQty": "0.01",
+        "executedQty": "0.00",
+        "price": "60000",
+    }
+    session = _FakeSession(response=_FakeResponse(json_data=payload))
+    client = _make_client(session)
+
+    result = client.cancel_order(symbol="BTCUSDT", order_id=555)
+
+    assert result == {
+        "symbol": "BTCUSDT",
+        "order_id": 555,
+        "client_order_id": "hm-abc123",
+        "status": "CANCELED",
+        "orig_qty": "0.01",
+        "executed_qty": "0.00",
+    }
+    call = session.calls[0]
+    assert call["method"] == "DELETE"
+    assert call["params"]["orderId"] == 555
+    assert "origClientOrderId" not in call["params"]
+
+
+def test_get_order_requires_an_identifier() -> None:
+    client = _make_client(_FakeSession())
+
+    with pytest.raises(ValueError, match="order_id or client_order_id"):
+        client.get_order(symbol="BTCUSDT")
+
+
+def test_get_order_by_client_order_id_returns_curated_fields() -> None:
+    payload = {
+        "symbol": "BTCUSDT",
+        "orderId": 555,
+        "clientOrderId": "hm-abc123",
+        "status": "PARTIALLY_FILLED",
+        "side": "BUY",
+        "type": "LIMIT",
+        "price": "50000",
+        "origQty": "0.01",
+        "executedQty": "0.004",
+        "cummulativeQuoteQty": "200.00",
+        "time": 1700000000000,
+        "updateTime": 1700000005000,
+        "isWorking": True,
+        "icebergQty": "should-not-leak",
+    }
+    session = _FakeSession(response=_FakeResponse(json_data=payload))
+    client = _make_client(session)
+
+    result = client.get_order(symbol="BTCUSDT", client_order_id="hm-abc123")
+
+    assert result == {
+        "symbol": "BTCUSDT",
+        "order_id": 555,
+        "client_order_id": "hm-abc123",
+        "status": "PARTIALLY_FILLED",
+        "side": "BUY",
+        "type": "LIMIT",
+        "price": "50000",
+        "orig_qty": "0.01",
+        "executed_qty": "0.004",
+        "cummulative_quote_qty": "200.00",
+        "time": 1700000000000,
+        "update_time": 1700000005000,
+        "is_working": True,
+    }
+    call = session.calls[0]
+    assert call["method"] == "GET"
+    assert call["params"]["origClientOrderId"] == "hm-abc123"
+
+
+def test_get_trades_returns_curated_fields() -> None:
+    payload = [
+        {
+            "symbol": "BTCUSDT",
+            "id": 1,
+            "orderId": 555,
+            "orderListId": -1,
+            "price": "50000",
+            "qty": "0.01",
+            "quoteQty": "500.00",
+            "commission": "0.00001",
+            "commissionAsset": "BTC",
+            "time": 1700000000000,
+            "isBuyer": True,
+            "isMaker": False,
+            "isBestMatch": True,
+        }
+    ]
+    session = _FakeSession(response=_FakeResponse(json_data=payload))
+    client = _make_client(session)
+
+    trades = client.get_trades("BTCUSDT")
+
+    assert trades == [
+        {
+            "id": 1,
+            "order_id": 555,
+            "price": "50000",
+            "qty": "0.01",
+            "quote_qty": "500.00",
+            "commission": "0.00001",
+            "commission_asset": "BTC",
+            "time": 1700000000000,
+            "is_buyer": True,
+            "is_maker": False,
+        }
+    ]
+    call = session.calls[0]
+    assert call["method"] == "GET"
+    assert call["headers"] == {"X-MBX-APIKEY": _FAKE_API_KEY}
+
+
+def test_get_exchange_info_curates_filters() -> None:
+    payload = {
+        "timezone": "UTC",
+        "serverTime": 1700000000000,
+        "symbols": [
+            {
+                "symbol": "BTCUSDT",
+                "status": "TRADING",
+                "baseAsset": "BTC",
+                "quoteAsset": "USDT",
+                "baseAssetPrecision": 8,
+                "quoteAssetPrecision": 8,
+                "permissions": ["SPOT"],  # must not leak into result
+                "filters": [
+                    {
+                        "filterType": "LOT_SIZE",
+                        "minQty": "0.00001000",
+                        "maxQty": "9000.00000000",
+                        "stepSize": "0.00001000",
+                    },
+                    {
+                        "filterType": "PRICE_FILTER",
+                        "minPrice": "0.01000000",
+                        "maxPrice": "1000000.00000000",
+                        "tickSize": "0.01000000",
+                    },
+                    {"filterType": "MIN_NOTIONAL", "minNotional": "10.00000000"},
+                ],
+            }
+        ],
+    }
+    session = _FakeSession(response=_FakeResponse(json_data=payload))
+    client = _make_client(session)
+
+    result = client.get_exchange_info("BTCUSDT")
+
+    assert result == {
+        "symbol": "BTCUSDT",
+        "status": "TRADING",
+        "base_asset": "BTC",
+        "quote_asset": "USDT",
+        "base_asset_precision": 8,
+        "quote_asset_precision": 8,
+        "filters": {
+            "min_qty": "0.00001000",
+            "max_qty": "9000.00000000",
+            "step_size": "0.00001000",
+            "min_price": "0.01000000",
+            "max_price": "1000000.00000000",
+            "tick_size": "0.01000000",
+            "min_notional": "10.00000000",
+        },
+    }
+    call = session.calls[0]
+    assert call["headers"] == {}  # public endpoint, unsigned
+    assert "signature" not in call["params"]
+
+
+def test_get_exchange_info_raises_when_symbol_not_found() -> None:
+    session = _FakeSession(
+        response=_FakeResponse(json_data={"timezone": "UTC", "symbols": []})
+    )
+    client = _make_client(session)
+
+    with pytest.raises(BinanceRequestError, match="NOPE"):
+        client.get_exchange_info("NOPE")
+
+
+def test_rate_limit_error_raised_on_429_with_retry_after() -> None:
+    response = _FakeResponse(
+        status_code=429,
+        json_data={"code": -1003, "msg": "Too many requests."},
+        ok=False,
+    )
+    response.headers = {"Retry-After": "5"}
+    session = _FakeSession(response=response)
+    client = _make_client(session)
+
+    with pytest.raises(BinanceRateLimitError) as excinfo:
+        client.create_order(
+            symbol="BTCUSDT", side="BUY", order_type="MARKET", quantity="0.01"
+        )
+    assert excinfo.value.retry_after_seconds == 5.0
+
+
+def test_rate_limit_error_raised_on_418_without_retry_after() -> None:
+    response = _FakeResponse(status_code=418, json_data={"msg": "IP banned"}, ok=False)
+    response.headers = {}
+    session = _FakeSession(response=response)
+    client = _make_client(session)
+
+    with pytest.raises(BinanceRateLimitError) as excinfo:
+        client.cancel_order(symbol="BTCUSDT", order_id=1)
+    assert excinfo.value.retry_after_seconds is None
+
+
+def test_write_method_credentials_never_appear_in_exceptions_or_logs(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    response = _FakeResponse(
+        status_code=401,
+        json_data={"code": -2015, "msg": "Invalid API-key, IP, or permissions."},
+        ok=False,
+    )
+    session = _FakeSession(response=response)
+    client = _make_client(session)
+
+    with caplog.at_level("DEBUG"):
+        with pytest.raises(BinanceError) as excinfo:
+            client.create_order(
+                symbol="BTCUSDT", side="BUY", order_type="MARKET", quantity="0.01"
+            )
+
+    exception_text = str(excinfo.value) + repr(excinfo.value)
+    assert _FAKE_API_KEY not in exception_text
+    assert _FAKE_API_SECRET not in exception_text
+    assert _FAKE_API_KEY not in caplog.text
+    assert _FAKE_API_SECRET not in caplog.text
