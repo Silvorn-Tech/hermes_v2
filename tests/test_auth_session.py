@@ -31,7 +31,7 @@ def session() -> DatabaseSession:
         connection.execute(
             text(
                 "TRUNCATE TABLE sessions, identities, user_roles, role_permissions, "
-                "permissions, roles, users"
+                "permissions, roles, users CASCADE"
             )
         )
 

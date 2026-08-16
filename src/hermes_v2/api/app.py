@@ -1,10 +1,9 @@
-import os
-
 from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import Response
 
+from hermes_v2.api.trading_routes import router as trading_router
 from hermes_v2.auth.oauth import (
     get_authenticated_user,
     google_callback,
@@ -19,6 +18,7 @@ from hermes_v2.auth.rate_limiting import (
     rate_limit,
 )
 from hermes_v2.auth.session import is_cookie_secure
+from hermes_v2.config import configured_allowed_origins as _configured_allowed_origins
 
 app = FastAPI(
     title="Hermes v2",
@@ -49,25 +49,29 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
 app.add_middleware(SecurityHeadersMiddleware)
 
 
-def _configured_allowed_origins() -> list[str]:
-    """Frontend origins allowed to make credentialed cross-origin requests.
-
-    Never falls back to a wildcard: the session cookie requires
-    Access-Control-Allow-Credentials, and browsers reject that combined with
-    Access-Control-Allow-Origin: *. Each deployment (local, Romeo,
-    production) configures its own exact origin(s) via HERMES_ALLOWED_ORIGINS.
-    """
-    raw_value = os.environ.get("HERMES_ALLOWED_ORIGINS", "")
-    return [entry.strip() for entry in raw_value.split(",") if entry.strip()]
-
-
+# allow_origins never falls back to a wildcard: the session cookie requires
+# Access-Control-Allow-Credentials, and browsers reject that combined with
+# Access-Control-Allow-Origin: *. Each deployment (local, Romeo, production)
+# configures its own exact origin(s) via HERMES_ALLOWED_ORIGINS — the same
+# allowlist hermes_v2.trading.origin_check's CSRF guard reads, via the
+# shared hermes_v2.config module so the two can never silently diverge.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_configured_allowed_origins(),
     allow_credentials=True,
     allow_methods=["GET", "POST"],
-    allow_headers=["Content-Type"],
+    allow_headers=["Content-Type", "Idempotency-Key"],
 )
+
+# Not app.include_router(trading_router): this FastAPI version wraps
+# included routers in a lazy _IncludedRouter that never appears in
+# app.routes, which would make trading_router's routes invisible to
+# tests/test_authorization.py's real_app.routes walk — the regression
+# guard that catches an unprotected mutating endpoint. Extending
+# app.router.routes directly with the already-built APIRoute objects
+# keeps every route eagerly visible there, exactly like the routes
+# defined directly on `app` below.
+app.router.routes.extend(trading_router.routes)
 
 
 @app.get("/health")

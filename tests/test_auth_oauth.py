@@ -458,7 +458,7 @@ def test_serialize_user_with_lazy_roles_while_session_is_active() -> None:
         connection.execute(
             text(
                 "TRUNCATE TABLE sessions, identities, user_roles, role_permissions, "
-                "permissions, roles, users"
+                "permissions, roles, users CASCADE"
             )
         )
 

@@ -20,6 +20,8 @@ PERMISSION_CATALOG = {
     "orders.read": "Read orders.",
     "orders.create": "Create orders.",
     "orders.cancel": "Cancel orders.",
+    "positions.read": "Read derived Binance Spot positions.",
+    "positions.close": "Close a position (submits a market sell order).",
     "risk.read": "Read risk data.",
     "risk.manage": "Manage risk settings.",
     "secrets.read": "Read managed secret metadata and values.",
