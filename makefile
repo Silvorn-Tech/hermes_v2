@@ -1,4 +1,4 @@
-.PHONY: install test lint format check docker-build docker-run run migrate bootstrap-admin
+.PHONY: install test lint format check docker-build docker-run run migrate bootstrap-admin binance-check
 
 install:
 	pip install -e ".[dev]"
@@ -42,6 +42,9 @@ migrate:
 
 bootstrap-admin:
 	set -a; . ./.env.dev; set +a; python -m hermes_v2.cli bootstrap-admin
+
+binance-check:
+	set -a; . ./.env.dev; set +a; python -m hermes_v2.cli binance-check
 
 security:
 	bandit -r src/
