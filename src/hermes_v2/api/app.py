@@ -2,6 +2,8 @@ import os
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.responses import Response
 
 from hermes_v2.auth.oauth import (
     get_authenticated_user,
@@ -9,11 +11,35 @@ from hermes_v2.auth.oauth import (
     google_login,
     logout_user,
 )
+from hermes_v2.auth.session import is_cookie_secure
 
 app = FastAPI(
     title="Hermes v2",
     version="0.1.0",
 )
+
+
+class SecurityHeadersMiddleware(BaseHTTPMiddleware):
+    """Baseline security response headers for every Hermes API response.
+
+    None of these depend on request content, so they are safe to apply
+    unconditionally to an API that returns only JSON and redirects (no
+    HTML), unlike a CSP which would need route-specific tuning.
+    """
+
+    async def dispatch(self, request: Request, call_next) -> Response:
+        response = await call_next(request)
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["Referrer-Policy"] = "no-referrer"
+        if is_cookie_secure():
+            response.headers["Strict-Transport-Security"] = (
+                "max-age=63072000; includeSubDomains"
+            )
+        return response
+
+
+app.add_middleware(SecurityHeadersMiddleware)
 
 
 def _configured_allowed_origins() -> list[str]:
