@@ -8,26 +8,31 @@ change (e.g. for a mobile webview) would remove that protection entirely.
 
 This adds an explicit, application-level control: every mutating trading
 request must carry an `Origin` header matching `HERMES_ALLOWED_ORIGINS`
-(the same allowlist `CORSMiddleware` already uses, `api/app.py`). Combined
-with FastAPI requiring a JSON body on these routes — a classic HTML
-`<form>` POST cannot set `Content-Type: application/json` without
-JavaScript, and cross-origin JavaScript is already blocked by CORS — this
-closes the gap without a new dependency or a CSRF token scheme.
+(the same allowlist `CORSMiddleware` already uses, `api/app.py`, both
+reading it via `hermes_v2.config.configured_allowed_origins` so the two
+checks can never silently diverge). Combined with FastAPI requiring a JSON
+body on these routes — a classic HTML `<form>` POST cannot set
+`Content-Type: application/json` without JavaScript, and cross-origin
+JavaScript is already blocked by CORS — this closes the gap without a new
+dependency or a CSRF token scheme.
+
+By construction this also means every mutating trading request must be a
+browser `fetch`/`XHR` call from an allowlisted origin — a plain `curl` or
+server-to-server call with no `Origin` header is rejected identically to a
+forged one. That is the intended behavior, not a gap: there is no
+legitimate non-browser caller of these endpoints today, and CORS already
+makes cross-origin JavaScript unable to set `Origin` to anything but the
+caller's real origin (`Origin` is a forbidden header name — JavaScript
+cannot spoof it).
 
 Scoped to the new trading routes only; `/auth/logout` is unchanged.
 """
 
 from __future__ import annotations
 
-import os
-
 from fastapi import HTTPException, Request
 
-
-def _configured_allowed_origins() -> list[str]:
-    """Same source of truth as `api/app.py`'s CORS allowlist."""
-    raw_value = os.environ.get("HERMES_ALLOWED_ORIGINS", "")
-    return [entry.strip() for entry in raw_value.split(",") if entry.strip()]
+from hermes_v2.config import configured_allowed_origins
 
 
 async def require_trusted_origin(request: Request) -> None:
@@ -35,10 +40,13 @@ async def require_trusted_origin(request: Request) -> None:
 
     Runs independently of `require_permission()` — both must pass. An
     unset `HERMES_ALLOWED_ORIGINS` means no origin is ever trusted (fails
-    closed, matching the CORS allowlist's own behavior when unset).
+    closed, matching the CORS allowlist's own behavior when unset) — so
+    there is no "dev convenience" default that weakens this check; local
+    development must set `HERMES_ALLOWED_ORIGINS` explicitly (already
+    required for CORS to work at all, see `.env.dev.example`).
     """
     origin = request.headers.get("origin")
-    if not origin or origin not in _configured_allowed_origins():
+    if not origin or origin not in configured_allowed_origins():
         raise HTTPException(status_code=403, detail="Untrusted request origin.")
 
 

@@ -26,6 +26,11 @@ class OrderEventType(str, enum.Enum):
     RECONCILED = "RECONCILED"
     CANCEL_REQUESTED = "CANCEL_REQUESTED"
     CANCELED = "CANCELED"
+    # An unexpected exception (not a validation/risk rejection or a
+    # BinanceError) occurred mid-flow. OrderService's safety-net catch uses
+    # this so the audit trail never mislabels a non-Binance failure as one —
+    # see OrderService._create_and_execute's broad except Exception block.
+    INTERNAL_ERROR = "INTERNAL_ERROR"
 
 
 class OrderEvent(Base):

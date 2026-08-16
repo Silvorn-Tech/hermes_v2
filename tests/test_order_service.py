@@ -28,7 +28,14 @@ from hermes_v2.integrations.binance import (
 )
 from hermes_v2.trading.exchange_info_cache import ExchangeInfoCache
 from hermes_v2.trading.idempotency import IdempotencyConflictError
-from hermes_v2.trading.models import AuditLogEntry, AuditResult, Order, OrderStatus
+from hermes_v2.trading.models import (
+    AuditLogEntry,
+    AuditResult,
+    Order,
+    OrderEvent,
+    OrderEventType,
+    OrderStatus,
+)
 from hermes_v2.trading.order_service import (
     OrderNotCancelableError,
     OrderNotFoundError,
@@ -178,7 +185,8 @@ def test_create_order_blocked_by_kill_switch_leaves_no_order_row(
     monkeypatch.setenv("TRADING_ENABLED", "false")
     user = _make_user(session)
     session.commit()
-    service = _make_service(session, _FakeBinanceClient())
+    client = _FakeBinanceClient()
+    service = _make_service(session, client)
 
     with pytest.raises(TradingDisabledError):
         service.create_order(
@@ -190,6 +198,10 @@ def test_create_order_blocked_by_kill_switch_leaves_no_order_row(
     audit_rows = session.scalars(select(AuditLogEntry)).all()
     assert len(audit_rows) == 1
     assert audit_rows[0].result == AuditResult.REJECTED
+    # The actual invariant that matters: not just "an exception was raised",
+    # but that BinanceClient itself was never touched.
+    assert client.create_order_calls == []
+    assert client.get_order_calls == []
 
 
 def test_kill_switch_rejection_is_idempotent_on_retry(
@@ -223,11 +235,14 @@ def test_cancel_order_blocked_by_kill_switch(
     monkeypatch.setenv("TRADING_ENABLED", "false")
     user = _make_user(session)
     session.commit()
-    service = _make_service(session, _FakeBinanceClient())
+    client = _FakeBinanceClient()
+    service = _make_service(session, client)
 
     with pytest.raises(TradingDisabledError):
         service.cancel_order(user.id, uuid.uuid4(), "cancel-key-1")
     session.commit()
+
+    assert client.cancel_order_calls == []
 
 
 def test_close_position_blocked_by_kill_switch(
@@ -243,6 +258,47 @@ def test_close_position_blocked_by_kill_switch(
     with pytest.raises(TradingDisabledError):
         service.close_position(user.id, "BTCUSDT", "close-key-1")
     session.commit()
+
+    assert client.create_order_calls == []
+
+
+def test_cancel_order_still_blocked_when_the_order_being_cancelled_exists(
+    monkeypatch: pytest.MonkeyPatch, session: Session
+) -> None:
+    """The kill switch must block a cancel even for a real, cancelable order
+    — not just the "order not found" early-exit case above."""
+    monkeypatch.setenv("TRADING_ENABLED", "true")
+    user = _make_user(session)
+    session.commit()
+    client = _FakeBinanceClient()
+    client.create_order_result = {
+        "symbol": "BTCUSDT",
+        "order_id": 555,
+        "client_order_id": "hm-x",
+        "status": "NEW",
+        "side": "BUY",
+        "type": "LIMIT",
+        "price": "50000",
+        "orig_qty": "0.01",
+        "executed_qty": "0",
+        "cummulative_quote_qty": "0",
+        "transact_time": 1700000000000,
+    }
+    service = _make_service(session, client)
+    create_result = service.create_order(
+        user.id, "BTCUSDT", "BUY", "LIMIT", Decimal("0.01"), Decimal("50000"), "key-1"
+    )
+    session.commit()
+    order_id = uuid.UUID(create_result["order"]["id"])
+
+    monkeypatch.setenv("TRADING_ENABLED", "false")
+    with pytest.raises(TradingDisabledError):
+        service.cancel_order(user.id, order_id, "cancel-key-1")
+    session.commit()
+
+    assert client.cancel_order_calls == []
+    order = session.get(Order, order_id)
+    assert order.status == OrderStatus.NEW  # untouched
 
 
 # --- validation rejection --------------------------------------------------------
@@ -355,6 +411,82 @@ def test_risk_evaluation_failure_rejects_and_still_finalizes_idempotency(
     )
     session.commit()
     assert retry_result == result
+
+
+# --- unexpected-exception safety net --------------------------------------------
+
+
+class _BrokenValidator:
+    """Simulates a genuinely unforeseen bug somewhere in the validate/risk
+    chain — anything not already an intentional rejection or a BinanceError."""
+
+    def validate(self, *args, **kwargs):
+        raise RuntimeError("boom: something nobody anticipated")
+
+
+def test_unexpected_exception_is_recorded_and_reraised(
+    monkeypatch: pytest.MonkeyPatch, session: Session
+) -> None:
+    monkeypatch.setenv("TRADING_ENABLED", "true")
+    user = _make_user(session)
+    session.commit()
+    client = _FakeBinanceClient()
+    service = OrderService(
+        session,
+        client,
+        validator=_BrokenValidator(),
+        exchange_info_cache=ExchangeInfoCache(),
+    )
+
+    with pytest.raises(RuntimeError, match="boom"):
+        service.create_order(
+            user.id, "BTCUSDT", "BUY", "MARKET", Decimal("0.01"), None, "key-1"
+        )
+    session.commit()
+
+    order = session.scalars(select(Order)).one()
+    assert order.status == OrderStatus.FAILED
+    assert "boom" in order.error_message
+    events = session.scalars(select(OrderEvent)).all()
+    assert any(e.event_type == OrderEventType.INTERNAL_ERROR for e in events)
+    audit_rows = session.scalars(select(AuditLogEntry)).all()
+    assert audit_rows[0].result == AuditResult.FAILED
+
+
+def test_retry_after_unexpected_exception_returns_stored_failure_not_a_hang(
+    monkeypatch: pytest.MonkeyPatch, session: Session
+) -> None:
+    """The whole point of the safety net: finalize() must still run, or this
+    key would be stuck at PROCESSING and every retry would raise
+    IdempotencyInProgressError forever."""
+    monkeypatch.setenv("TRADING_ENABLED", "true")
+    user = _make_user(session)
+    session.commit()
+    client = _FakeBinanceClient()
+    service = OrderService(
+        session,
+        client,
+        validator=_BrokenValidator(),
+        exchange_info_cache=ExchangeInfoCache(),
+    )
+
+    with pytest.raises(RuntimeError):
+        service.create_order(
+            user.id, "BTCUSDT", "BUY", "MARKET", Decimal("0.01"), None, "key-1"
+        )
+    session.commit()
+
+    # A second attempt with the same key, now against a working validator,
+    # must return the stored FAILED response rather than raising
+    # IdempotencyInProgressError or hitting Binance again.
+    working_service = _make_service(session, client)
+    retry_result = working_service.create_order(
+        user.id, "BTCUSDT", "BUY", "MARKET", Decimal("0.01"), None, "key-1"
+    )
+    session.commit()
+
+    assert retry_result["status"] == "FAILED"
+    assert client.create_order_calls == []
 
 
 # --- successful order -----------------------------------------------------------

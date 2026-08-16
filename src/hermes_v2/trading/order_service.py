@@ -222,9 +222,54 @@ class OrderService:
         self._session.add(order)
         self._session.flush()
 
-        response = self._validate_and_execute(
-            order, side, order_type, quantity, price, audit_action
-        )
+        try:
+            response = self._validate_and_execute(
+                order, side, order_type, quantity, price, audit_action
+            )
+        except Exception as exc:
+            # Safety net: every *expected* failure mode inside
+            # _validate_and_execute already returns a response dict of its
+            # own (validation/risk rejection, Binance error, ambiguous
+            # failure). This only fires for something genuinely unforeseen
+            # (e.g. a non-finite Decimal reaching arithmetic before
+            # OrderValidator's own finite-value check could catch it, or any
+            # future bug) — without it, the exception would skip finalize()
+            # entirely and leave this idempotency reservation stuck at
+            # PROCESSING forever, permanently blocking every retry with this
+            # key (see idempotency.reserve()'s docstring). Re-raised after
+            # recording, so the caller still sees the real error.
+            order.status = OrderStatus.FAILED
+            order.error_message = f"Unexpected error: {exc}"[:500]
+            order.terminal_at = datetime.now(UTC)
+            self._session.add(
+                OrderEvent(
+                    order_id=order.id,
+                    event_type=OrderEventType.INTERNAL_ERROR,
+                    detail=str(exc)[:1000],
+                )
+            )
+            self._session.flush()
+            self._audit(
+                order.user_id,
+                audit_action,
+                order.symbol,
+                order.requested_quantity,
+                AuditResult.FAILED,
+                order.id,
+                None,
+                order.error_message,
+            )
+            finalize(
+                self._session,
+                reservation_key_row_id,
+                {
+                    "order": order_to_response(order),
+                    "status": "FAILED",
+                    "reason": order.error_message,
+                },
+            )
+            raise
+
         finalize(self._session, reservation_key_row_id, response)
         return response
 

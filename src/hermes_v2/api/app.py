@@ -1,5 +1,3 @@
-import os
-
 from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -20,6 +18,7 @@ from hermes_v2.auth.rate_limiting import (
     rate_limit,
 )
 from hermes_v2.auth.session import is_cookie_secure
+from hermes_v2.config import configured_allowed_origins as _configured_allowed_origins
 
 app = FastAPI(
     title="Hermes v2",
@@ -50,18 +49,12 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
 app.add_middleware(SecurityHeadersMiddleware)
 
 
-def _configured_allowed_origins() -> list[str]:
-    """Frontend origins allowed to make credentialed cross-origin requests.
-
-    Never falls back to a wildcard: the session cookie requires
-    Access-Control-Allow-Credentials, and browsers reject that combined with
-    Access-Control-Allow-Origin: *. Each deployment (local, Romeo,
-    production) configures its own exact origin(s) via HERMES_ALLOWED_ORIGINS.
-    """
-    raw_value = os.environ.get("HERMES_ALLOWED_ORIGINS", "")
-    return [entry.strip() for entry in raw_value.split(",") if entry.strip()]
-
-
+# allow_origins never falls back to a wildcard: the session cookie requires
+# Access-Control-Allow-Credentials, and browsers reject that combined with
+# Access-Control-Allow-Origin: *. Each deployment (local, Romeo, production)
+# configures its own exact origin(s) via HERMES_ALLOWED_ORIGINS — the same
+# allowlist hermes_v2.trading.origin_check's CSRF guard reads, via the
+# shared hermes_v2.config module so the two can never silently diverge.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_configured_allowed_origins(),

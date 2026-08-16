@@ -122,6 +122,63 @@ def test_load_risk_limits_rejects_non_numeric_value(
         load_risk_limits()
 
 
+# --- non-finite values (NaN/Infinity) -----------------------------------------
+#
+# Decimal NaN comparisons raise decimal.InvalidOperation instead of
+# returning False the way float NaN does. OrderValidator already blocks a
+# non-finite order quantity/price before RiskEngine runs, but the account
+# snapshot (from PortfolioService/PositionsService, ultimately Binance's own
+# data) isn't re-validated upstream — RiskEngine must reject these itself,
+# cleanly, rather than crash.
+
+
+@pytest.mark.parametrize("bad_value", [Decimal("NaN"), Decimal("Infinity")])
+def test_non_finite_portfolio_value_is_rejected_without_raising(
+    bad_value: Decimal,
+) -> None:
+    engine = RiskEngine(_FULLY_CONFIGURED_LIMITS)
+    snapshot = AccountRiskSnapshot(
+        total_portfolio_value_quote=bad_value,
+        current_symbol_exposure_quote=Decimal("0"),
+        current_total_exposure_quote=Decimal("0"),
+        open_position_count=0,
+        realized_loss_today_quote=Decimal("0"),
+    )
+
+    decision = engine.validate_order(_buy(notional="10"), snapshot)
+
+    assert decision.approved is False
+    assert "finite" in decision.reason.lower()
+
+
+def test_non_finite_estimated_notional_is_rejected_without_raising() -> None:
+    engine = RiskEngine(_FULLY_CONFIGURED_LIMITS)
+    request = OrderRiskRequest(
+        symbol="BTCUSDT",
+        side="BUY",
+        estimated_notional_quote=Decimal("NaN"),
+        is_new_symbol_for_account=True,
+    )
+
+    decision = engine.validate_order(request, _snapshot())
+
+    assert decision.approved is False
+    assert "finite" in decision.reason.lower()
+
+
+def test_non_finite_realized_loss_is_rejected_without_raising() -> None:
+    engine = RiskEngine(_FULLY_CONFIGURED_LIMITS)
+    snapshot = _snapshot()
+    snapshot = AccountRiskSnapshot(
+        **{**snapshot.__dict__, "realized_loss_today_quote": Decimal("Infinity")}
+    )
+
+    decision = engine.validate_order(_buy(notional="10"), snapshot)
+
+    assert decision.approved is False
+    assert "finite" in decision.reason.lower()
+
+
 # --- fail-closed on missing config -------------------------------------------
 
 
@@ -151,6 +208,107 @@ def test_order_rejected_when_a_single_limit_is_missing(missing_field: str) -> No
     engine = RiskEngine(RiskLimits(**limits_dict))
 
     decision = engine.validate_order(_buy(notional="50"), _snapshot())
+
+    assert decision.approved is False
+
+
+# --- zero and negative limits: must fail closed, never open --------------------
+#
+# A limit of 0 or a negative number is almost certainly a misconfiguration
+# (nobody means "allow negative exposure"), but the important property is
+# that it can never accidentally *bypass* a check — every one of these
+# should end up blocking every order, the same direction as "not
+# configured," never the opposite.
+
+
+def test_zero_order_notional_limit_blocks_every_order() -> None:
+    limits = RiskLimits(
+        **{
+            **_FULLY_CONFIGURED_LIMITS.__dict__,
+            "max_order_notional_quote": Decimal("0"),
+        }
+    )
+    engine = RiskEngine(limits)
+
+    decision = engine.validate_order(_buy(notional="0.01"), _snapshot())
+
+    assert decision.approved is False
+
+
+def test_negative_order_notional_limit_blocks_every_order() -> None:
+    limits = RiskLimits(
+        **{
+            **_FULLY_CONFIGURED_LIMITS.__dict__,
+            "max_order_notional_quote": Decimal("-100"),
+        }
+    )
+    engine = RiskEngine(limits)
+
+    decision = engine.validate_order(_buy(notional="0.01"), _snapshot())
+
+    assert decision.approved is False
+
+
+def test_zero_symbol_exposure_limit_blocks_every_buy() -> None:
+    limits = RiskLimits(
+        **{**_FULLY_CONFIGURED_LIMITS.__dict__, "max_symbol_exposure_pct": Decimal("0")}
+    )
+    engine = RiskEngine(limits)
+
+    decision = engine.validate_order(
+        _buy(notional="10", is_new_symbol=False), _snapshot()
+    )
+
+    assert decision.approved is False
+
+
+def test_negative_total_exposure_limit_blocks_every_buy() -> None:
+    limits = RiskLimits(
+        **{**_FULLY_CONFIGURED_LIMITS.__dict__, "max_total_exposure_pct": Decimal("-1")}
+    )
+    engine = RiskEngine(limits)
+
+    decision = engine.validate_order(_buy(notional="10"), _snapshot())
+
+    assert decision.approved is False
+
+
+def test_zero_daily_loss_limit_blocks_every_order_even_with_no_loss_today() -> None:
+    limits = RiskLimits(
+        **{**_FULLY_CONFIGURED_LIMITS.__dict__, "max_daily_loss_pct": Decimal("0")}
+    )
+    engine = RiskEngine(limits)
+    snapshot = _snapshot(realized_loss_today_quote="0")
+
+    decision = engine.validate_order(_buy(notional="10"), snapshot)
+
+    assert decision.approved is False
+
+
+def test_zero_open_positions_limit_blocks_every_new_symbol() -> None:
+    limits = RiskLimits(
+        **{**_FULLY_CONFIGURED_LIMITS.__dict__, "max_open_positions": 0}
+    )
+    engine = RiskEngine(limits)
+
+    decision = engine.validate_order(
+        _buy(symbol="ETHUSDT", notional="10", is_new_symbol=True),
+        _snapshot(open_position_count=0),
+    )
+
+    assert decision.approved is False
+
+
+def test_negative_open_positions_limit_blocks_every_new_symbol() -> None:
+    limits = RiskLimits(
+        **{**_FULLY_CONFIGURED_LIMITS.__dict__, "max_open_positions": -1}
+    )
+    engine = RiskEngine(limits)
+
+    decision = engine.validate_order(
+        _buy(symbol="ETHUSDT", notional="10", is_new_symbol=True),
+        _snapshot(open_position_count=0),
+    )
 
     assert decision.approved is False
 

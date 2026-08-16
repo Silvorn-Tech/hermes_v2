@@ -156,6 +156,18 @@ def _run_order_service_action(
         except BinanceError as exc:
             session.rollback()
             raise _http_exception_for_binance_error(exc) from exc
+        except Exception:
+            # Anything else reaching here already went through
+            # OrderService's own safety-net catch (see
+            # order_service.py's _create_and_execute), which recorded a
+            # FAILED order, an audit row, and finalized the idempotency
+            # reservation before re-raising. Session.close() on the `with`
+            # block's exit rolls back anything uncommitted, which would
+            # silently discard all of that — commit here so it survives,
+            # then let FastAPI's default handler produce a plain 500 with
+            # no internal detail, same as everywhere else in this codebase.
+            session.commit()
+            raise
 
         session.commit()
         return result

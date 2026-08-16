@@ -190,6 +190,80 @@ def test_authenticated_without_permission_is_403(
     assert response.status_code == 403
 
 
+def test_unauthenticated_request_to_cancel_order_is_401() -> None:
+    client = TestClient(app)
+    response = client.post(
+        "/orders/00000000-0000-0000-0000-000000000000/cancel", headers=_headers()
+    )
+    assert response.status_code == 401
+
+
+def test_unauthenticated_request_to_close_position_is_401() -> None:
+    client = TestClient(app)
+    response = client.post("/positions/BTCUSDT/close", headers=_headers())
+    assert response.status_code == 401
+
+
+def test_authenticated_without_permission_cannot_cancel_order(
+    monkeypatch: pytest.MonkeyPatch, db_session: Session
+) -> None:
+    monkeypatch.setenv("HERMES_ALLOWED_ORIGINS", _ALLOWED_ORIGIN)
+    seed_authorization_data(db_session)
+    user = User(email="no-perms@example.com")
+    db_session.add(user)
+    db_session.flush()
+    _, raw_token = create_session(db_session, user, timedelta(hours=1))
+    db_session.commit()
+
+    client = TestClient(app)
+    client.cookies.set("hermes_session", raw_token)
+
+    response = client.post(
+        "/orders/00000000-0000-0000-0000-000000000000/cancel", headers=_headers()
+    )
+    assert response.status_code == 403
+
+
+def test_authenticated_without_permission_cannot_close_position(
+    monkeypatch: pytest.MonkeyPatch, db_session: Session
+) -> None:
+    monkeypatch.setenv("HERMES_ALLOWED_ORIGINS", _ALLOWED_ORIGIN)
+    seed_authorization_data(db_session)
+    user = User(email="no-perms@example.com")
+    db_session.add(user)
+    db_session.flush()
+    _, raw_token = create_session(db_session, user, timedelta(hours=1))
+    db_session.commit()
+
+    client = TestClient(app)
+    client.cookies.set("hermes_session", raw_token)
+
+    response = client.post("/positions/BTCUSDT/close", headers=_headers())
+    assert response.status_code == 403
+
+
+def test_authenticated_without_permission_cannot_create_order(
+    monkeypatch: pytest.MonkeyPatch, db_session: Session
+) -> None:
+    monkeypatch.setenv("HERMES_ALLOWED_ORIGINS", _ALLOWED_ORIGIN)
+    seed_authorization_data(db_session)
+    user = User(email="no-perms@example.com")
+    db_session.add(user)
+    db_session.flush()
+    _, raw_token = create_session(db_session, user, timedelta(hours=1))
+    db_session.commit()
+
+    client = TestClient(app)
+    client.cookies.set("hermes_session", raw_token)
+
+    response = client.post(
+        "/orders",
+        json={"symbol": "BTCUSDT", "side": "BUY", "type": "MARKET", "quantity": "0.01"},
+        headers=_headers(),
+    )
+    assert response.status_code == 403
+
+
 # --- create order -----------------------------------------------------------------
 
 

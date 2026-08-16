@@ -106,6 +106,30 @@ class OrderValidator:
             return OrderValidationResult(
                 approved=False, reason=f"Invalid order type: {request.order_type!r}"
             )
+
+        # Decimal NaN/Infinity comparisons (<=, >, etc.) raise InvalidOperation
+        # instead of returning False the way float NaN comparisons silently
+        # do — so this must be checked with .is_finite() (a query, never
+        # raises) *before* any ordering comparison touches these values,
+        # including market_price and filters below. Reject explicitly rather
+        # than letting an InvalidOperation escape uncaught: OrderService's
+        # idempotency reservation is only finalized by the return value this
+        # function produces, never by an exception handler above it.
+        if not request.quantity.is_finite():
+            return OrderValidationResult(
+                approved=False,
+                reason=f"Quantity must be a finite number, got {request.quantity}",
+            )
+        if request.price is not None and not request.price.is_finite():
+            return OrderValidationResult(
+                approved=False,
+                reason=f"Price must be a finite number, got {request.price}",
+            )
+        if not market_price.is_finite():
+            return OrderValidationResult(
+                approved=False, reason="Market price is unavailable or non-finite"
+            )
+
         if request.quantity <= 0:
             return OrderValidationResult(
                 approved=False, reason="Quantity must be positive"

@@ -123,6 +123,20 @@ class RiskEngine:
     def validate_order(
         self, request: OrderRiskRequest, snapshot: AccountRiskSnapshot
     ) -> RiskDecision:
+        # Decimal NaN/Infinity comparisons (<=, >, ...) raise
+        # InvalidOperation instead of returning False the way float NaN
+        # does. OrderValidator already rejects a non-finite order
+        # quantity/price before RiskEngine ever runs, but the account-state
+        # values here (from PortfolioService/PositionsService, ultimately
+        # from Binance's own balance/trade data) aren't re-validated
+        # upstream — so this checks them too, before any comparison touches
+        # them, rather than letting an uncaught InvalidOperation escape as
+        # a generic internal error instead of RiskEngine's own clean,
+        # fail-closed rejection.
+        non_finite_check = self._check_all_values_finite(request, snapshot)
+        if not non_finite_check.approved:
+            return non_finite_check
+
         symbol_check = self._check_allowed_symbol(request)
         if not symbol_check.approved:
             return symbol_check
@@ -148,6 +162,23 @@ class RiskEngine:
             if not open_positions_check.approved:
                 return open_positions_check
 
+        return RiskDecision(approved=True)
+
+    def _check_all_values_finite(
+        self, request: OrderRiskRequest, snapshot: AccountRiskSnapshot
+    ) -> RiskDecision:
+        values = {
+            "estimated_notional_quote": request.estimated_notional_quote,
+            "total_portfolio_value_quote": snapshot.total_portfolio_value_quote,
+            "current_symbol_exposure_quote": snapshot.current_symbol_exposure_quote,
+            "current_total_exposure_quote": snapshot.current_total_exposure_quote,
+            "realized_loss_today_quote": snapshot.realized_loss_today_quote,
+        }
+        for name, value in values.items():
+            if not value.is_finite():
+                return RiskDecision(
+                    approved=False, reason=f"{name} is not a finite number ({value})"
+                )
         return RiskDecision(approved=True)
 
     def _check_allowed_symbol(self, request: OrderRiskRequest) -> RiskDecision:

@@ -142,6 +142,61 @@ def test_negative_quantity_is_rejected() -> None:
     assert result.approved is False
 
 
+# --- non-finite Decimal values (NaN/Infinity) ------------------------------------
+#
+# Decimal NaN comparisons (<=, >, ...) raise decimal.InvalidOperation instead
+# of returning False the way float NaN does — an uncaught InvalidOperation
+# here would skip OrderService's finalize() call and permanently strand the
+# idempotency reservation behind it (see order_service.py). These lock in
+# that OrderValidator itself rejects non-finite values cleanly, never raises.
+
+
+@pytest.mark.parametrize("bad_quantity", ["NaN", "Infinity", "-Infinity"])
+def test_non_finite_quantity_is_rejected_without_raising(bad_quantity: str) -> None:
+    validator = OrderValidator()
+    request = OrderValidationRequest(
+        symbol="BTCUSDT",
+        side="BUY",
+        order_type="MARKET",
+        quantity=Decimal(bad_quantity),
+        price=None,
+    )
+
+    result = validator.validate(request, Decimal("50000"), _FILTERS)
+
+    assert result.approved is False
+    assert "finite" in result.reason.lower()
+
+
+@pytest.mark.parametrize("bad_price", ["NaN", "Infinity", "-Infinity"])
+def test_non_finite_limit_price_is_rejected_without_raising(bad_price: str) -> None:
+    validator = OrderValidator()
+    request = OrderValidationRequest(
+        symbol="BTCUSDT",
+        side="BUY",
+        order_type="LIMIT",
+        quantity=Decimal("0.01"),
+        price=Decimal(bad_price),
+    )
+
+    result = validator.validate(request, Decimal("50000"), _FILTERS)
+
+    assert result.approved is False
+    assert "finite" in result.reason.lower()
+
+
+def test_non_finite_market_price_is_rejected_without_raising() -> None:
+    """Defense in depth: market_price is supplied by the caller (OrderService,
+    from Binance's own ticker), not user input, but must still never be
+    trusted blindly before arithmetic touches it."""
+    validator = OrderValidator()
+
+    result = validator.validate(_market(quantity="0.01"), Decimal("NaN"), _FILTERS)
+
+    assert result.approved is False
+    assert "market price" in result.reason.lower()
+
+
 def test_market_order_with_a_price_is_rejected() -> None:
     validator = OrderValidator()
     request = OrderValidationRequest(
