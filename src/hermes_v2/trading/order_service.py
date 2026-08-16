@@ -540,6 +540,16 @@ class OrderService:
                 reservation.key_row_id,
                 {"order": None, "status": "REJECTED", "reason": "Trading is disabled."},
             )
+            self._audit(
+                user_id,
+                "orders.cancel",
+                None,
+                None,
+                AuditResult.REJECTED,
+                None,
+                None,
+                "TRADING_ENABLED is false",
+            )
             raise TradingDisabledError("Trading is disabled.")
 
         order = self._session.get(Order, order_id)
@@ -548,6 +558,23 @@ class OrderService:
                 self._session,
                 reservation.key_row_id,
                 {"order": None, "status": "REJECTED", "reason": "Order not found."},
+            )
+            # Deliberately audits with order_id=None below, not the
+            # requested order_id: a cancel request for another user's real
+            # order and a cancel request for a nonexistent id are
+            # indistinguishable here by design (OrderNotFoundError either
+            # way, see the route layer's 404 mapping) — recording the
+            # requested id in a users-can-read-their-own-audit-trail system
+            # would leak whether that id belongs to someone else.
+            self._audit(
+                user_id,
+                "orders.cancel",
+                None,
+                None,
+                AuditResult.REJECTED,
+                None,
+                None,
+                "Order not found",
             )
             raise OrderNotFoundError(f"No order {order_id} for this user.")
 
@@ -560,6 +587,16 @@ class OrderService:
                     "status": "REJECTED",
                     "reason": f"Order is {order.status.value}, not cancelable.",
                 },
+            )
+            self._audit(
+                user_id,
+                "orders.cancel",
+                order.symbol,
+                order.requested_quantity,
+                AuditResult.REJECTED,
+                order.id,
+                order.binance_order_id,
+                f"Order is {order.status.value}, not cancelable",
             )
             raise OrderNotCancelableError(
                 f"Order {order_id} is {order.status.value}, not cancelable."

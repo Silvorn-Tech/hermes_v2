@@ -71,14 +71,20 @@ class _FakeBinanceClient:
         }
         self.get_order_result = None
         self.create_order_calls: list[dict] = []
+        self.market_data_error: Exception | None = None
+        self.balances_error: Exception | None = None
 
     def get_market_data(self, symbol: str) -> dict:
+        if self.market_data_error is not None:
+            raise self.market_data_error
         return self.market_data[symbol]
 
     def get_exchange_info(self, symbol: str) -> dict:
         return self.exchange_info[symbol]
 
     def get_balances(self) -> list[dict]:
+        if self.balances_error is not None:
+            raise self.balances_error
         return self.balances
 
     def get_trades(self, symbol: str) -> list[dict]:
@@ -495,6 +501,59 @@ def test_get_market_data(
     response = client.get("/market-data", params={"symbol": "BTCUSDT"})
     assert response.status_code == 200
     assert response.json()["last_price"] == "50000"
+
+
+# --- Binance error propagation --------------------------------------------------
+
+
+def test_binance_rate_limit_on_a_read_route_returns_429_with_retry_after(
+    authorized_client: tuple[TestClient, _FakeBinanceClient],
+) -> None:
+    from hermes_v2.integrations.binance import BinanceRateLimitError
+
+    client, fake = authorized_client
+    fake.market_data_error = BinanceRateLimitError(
+        "HTTP 429, Binance code=-1003 msg=Too many requests.", retry_after_seconds=7.0
+    )
+
+    response = client.get("/market-data", params={"symbol": "BTCUSDT"})
+
+    assert response.status_code == 429
+    assert response.headers.get("retry-after") == "7"
+
+
+def test_binance_auth_error_on_a_read_route_returns_502_not_401(
+    authorized_client: tuple[TestClient, _FakeBinanceClient],
+) -> None:
+    """A misconfigured/rejected Binance credential is Hermes's fault, not
+    the caller's — must never look like the caller's own session/RBAC
+    failed (401/403)."""
+    from hermes_v2.integrations.binance import BinanceAuthenticationError
+
+    client, fake = authorized_client
+    fake.balances_error = BinanceAuthenticationError(
+        "HTTP 401, Binance code=-2015 msg=Invalid API-key, IP, or permissions."
+    )
+
+    response = client.get("/balances")
+
+    assert response.status_code == 502
+
+
+def test_close_position_rate_limited_while_reading_balance_returns_429(
+    authorized_client: tuple[TestClient, _FakeBinanceClient],
+) -> None:
+    from hermes_v2.integrations.binance import BinanceRateLimitError
+
+    client, fake = authorized_client
+    fake.balances_error = BinanceRateLimitError(
+        "HTTP 429, Binance code=-1003 msg=Too many requests.", retry_after_seconds=3.0
+    )
+
+    response = client.post("/positions/BTCUSDT/close", headers=_headers("close-key-1"))
+
+    assert response.status_code == 429
+    assert response.headers.get("retry-after") == "3"
 
 
 def test_get_positions_empty(
