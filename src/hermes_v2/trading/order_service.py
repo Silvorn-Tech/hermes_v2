@@ -238,8 +238,17 @@ class OrderService:
             # PROCESSING forever, permanently blocking every retry with this
             # key (see idempotency.reserve()'s docstring). Re-raised after
             # recording, so the caller still sees the real error.
+            # Unlike every other error path in this module, an exception
+            # caught here can come from literally anywhere in the call
+            # chain and hasn't been curated the way OrderValidator/
+            # RiskEngine/BinanceClient's own messages deliberately are —
+            # so, unlike those, str(exc) never reaches order.error_message
+            # (which order_to_response() returns over HTTP). The real
+            # detail still goes to OrderEvent.detail and the audit log,
+            # both DB-only fields no route currently exposes, for an
+            # operator to actually debug the unforeseen failure.
             order.status = OrderStatus.FAILED
-            order.error_message = f"Unexpected error: {exc}"[:500]
+            order.error_message = "An unexpected internal error occurred."
             order.terminal_at = datetime.now(UTC)
             self._session.add(
                 OrderEvent(
@@ -257,7 +266,7 @@ class OrderService:
                 AuditResult.FAILED,
                 order.id,
                 None,
-                order.error_message,
+                str(exc)[:1000],
             )
             finalize(
                 self._session,

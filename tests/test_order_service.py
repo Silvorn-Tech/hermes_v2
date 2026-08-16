@@ -448,11 +448,22 @@ def test_unexpected_exception_is_recorded_and_reraised(
 
     order = session.scalars(select(Order)).one()
     assert order.status == OrderStatus.FAILED
-    assert "boom" in order.error_message
+    # The HTTP-facing field is deliberately generic — an arbitrary
+    # exception's text is not curated the way every other error path's
+    # message is, so it must never reach a field order_to_response()
+    # returns over the API.
+    assert order.error_message == "An unexpected internal error occurred."
     events = session.scalars(select(OrderEvent)).all()
-    assert any(e.event_type == OrderEventType.INTERNAL_ERROR for e in events)
+    internal_error_events = [
+        e for e in events if e.event_type == OrderEventType.INTERNAL_ERROR
+    ]
+    assert len(internal_error_events) == 1
+    # The real detail is preserved, but only in DB-only fields no route
+    # currently exposes over HTTP.
+    assert "boom" in internal_error_events[0].detail
     audit_rows = session.scalars(select(AuditLogEntry)).all()
     assert audit_rows[0].result == AuditResult.FAILED
+    assert "boom" in audit_rows[0].detail
 
 
 def test_retry_after_unexpected_exception_returns_stored_failure_not_a_hang(
@@ -489,6 +500,10 @@ def test_retry_after_unexpected_exception_returns_stored_failure_not_a_hang(
 
     assert retry_result["status"] == "FAILED"
     assert client.create_order_calls == []
+    # The stored/replayed HTTP-facing response must also never carry the
+    # raw exception text.
+    assert "boom" not in retry_result["reason"]
+    assert "boom" not in retry_result["order"]["error_message"]
 
 
 # --- successful order -----------------------------------------------------------
