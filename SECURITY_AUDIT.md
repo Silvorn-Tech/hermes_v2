@@ -230,7 +230,7 @@ OAuth flaw today.
 ```python
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=_configured_allowed_origins(),   # from HERMES_ALLOWED_ORIGINS, comma-split
+    allow_origins=_configured_allowed_origins(),  # from HERMES_ALLOWED_ORIGINS, comma-split
     allow_credentials=True,
     allow_methods=["GET", "POST"],
     allow_headers=["Content-Type"],
