@@ -187,32 +187,36 @@ needs **zero changes to `compose.yaml`**: add the line to `.env` on ROMEO,
 future-proof for this — nothing in this PR needs to change when trading work
 starts.
 
-## 7. What's still pending before connecting Binance
+## 7. Binance trading (implemented, disabled by default)
 
-This PR prepares the mechanism only — no Binance client, API calls, or
-trading logic exists in this repo, and none was added here. Before that work
-begins:
+**Update (`feature/binance-trading-integration-v1`):** the section below
+was written when this repo had no Binance client at all. That's no longer
+true — a full read+write client, order execution pipeline, and REST API
+now exist (see `docs/architecture/trading.md`), but live execution stays
+inert behind `TRADING_ENABLED=false` until an operator deliberately enables
+it per that document's activation runbook. What follows is what's still
+true, and what changed:
 
 - Create the Binance API key with **withdrawals disabled** and an **IP
   allowlist restricted to ROMEO's egress IP** (Binance account-console
   settings, not a Hermes change) — already flagged in `SECURITY_AUDIT.md`
-  §22 as the single most important prerequisite.
+  §22 as the single most important prerequisite, and enforced by `hermes
+  binance-check`'s permissions check.
 - Set `BINANCE_API_KEY`/`BINANCE_API_SECRET` directly in ROMEO's `.env`
-  following §4/§6 above — the reserved-but-commented-out placeholders added
-  to `.env.example` in this PR show where they go; do not set real values
-  until the trading code that reads them exists.
-- Decide, before the first key is created, whether Hermes will ever store
-  per-user trading credentials in Postgres. If so, that needs column-level
-  encryption at rest — no precedent for that exists in the current schema,
-  and it is not needed for a single operator-level key living only in
-  `.env`.
-- Add structured audit logging for every trading action once trading
-  endpoints exist (`SECURITY_AUDIT.md` §22) — out of scope here, since no
-  such endpoint exists yet.
-- Directly verify, on ROMEO, the pre-existing production-config gaps this PR
-  did not touch: `HERMES_ALLOWED_RETURN_URIS`,  `HERMES_ALLOWED_ORIGINS`,
-  `HERMES_COOKIE_SECURE`, `POSTGRES_PASSWORD` strength, and the backend
-  container's port binding — all listed with exact commands in
-  `SECURITY_AUDIT.md` §21. None of this PR's changes depend on those being
-  fixed first, but they should be closed before Binance secrets are added to
-  the same `.env`.
+  following §4/§6 above.
+- Per-user trading credentials in Postgres were decided against: Hermes
+  stores exactly one operator-level Binance key, in `.env`, never in the
+  database — no encryption-at-rest column exists or is needed for that.
+- **Done:** structured audit logging exists (`audit_log` table, written by
+  `OrderService` for every mutating trading action's outcome —
+  success/rejected/failed, never a secret).
+- **Done:** idempotency exists (two layers — see
+  `docs/architecture/trading.md`).
+- Directly verify, on ROMEO, the pre-existing production-config gaps this
+  section originally flagged: `HERMES_ALLOWED_RETURN_URIS`,
+  `HERMES_ALLOWED_ORIGINS`, `HERMES_COOKIE_SECURE`, `POSTGRES_PASSWORD`
+  strength, and the backend container's port binding — all listed with
+  exact commands in `SECURITY_AUDIT.md` §21. These should be closed before
+  `TRADING_ENABLED` is ever set to `true`, since `HERMES_ALLOWED_ORIGINS`
+  in particular is now also what `require_trusted_origin()` checks for
+  every mutating trading request, not just CORS.
