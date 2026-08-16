@@ -508,9 +508,7 @@ class BinanceClient:
         Used to compute a position's weighted-average entry price — Binance
         Spot has no position endpoint, only a trade ledger.
         """
-        payload = self._get(
-            "/api/v3/myTrades", params={"symbol": symbol}, signed=True
-        )
+        payload = self._get("/api/v3/myTrades", params={"symbol": symbol}, signed=True)
         return [
             {
                 "id": trade.get("id"),

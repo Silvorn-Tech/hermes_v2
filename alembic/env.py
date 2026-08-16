@@ -8,6 +8,7 @@ from sqlalchemy import engine_from_config, pool
 
 from hermes_v2.auth import models  # noqa: F401
 from hermes_v2.database.connection import Base
+from hermes_v2.trading import models as trading_models  # noqa: F401
 
 config = context.config
 

@@ -76,9 +76,7 @@ def load_risk_limits() -> RiskLimits:
         max_symbol_exposure_pct=_parse_decimal_env(
             "HERMES_RISK_MAX_SYMBOL_EXPOSURE_PCT"
         ),
-        max_total_exposure_pct=_parse_decimal_env(
-            "HERMES_RISK_MAX_TOTAL_EXPOSURE_PCT"
-        ),
+        max_total_exposure_pct=_parse_decimal_env("HERMES_RISK_MAX_TOTAL_EXPOSURE_PCT"),
         max_daily_loss_pct=_parse_decimal_env("HERMES_RISK_MAX_DAILY_LOSS_PCT"),
         max_open_positions=_parse_int_env("HERMES_RISK_MAX_OPEN_POSITIONS"),
         allowed_symbols=_parse_symbol_set_env("HERMES_RISK_ALLOWED_SYMBOLS"),
@@ -93,7 +91,9 @@ class OrderRiskRequest:
     symbol: str
     side: str  # "BUY" or "SELL"
     estimated_notional_quote: Decimal
-    is_new_symbol_for_account: bool  # True only for a BUY opening a symbol the account doesn't already hold
+    is_new_symbol_for_account: (
+        bool  # True only for a BUY opening a symbol the account doesn't already hold
+    )
 
 
 @dataclass(frozen=True)
@@ -154,7 +154,10 @@ class RiskEngine:
         if not self._limits.allowed_symbols:
             return RiskDecision(
                 approved=False,
-                reason="HERMES_RISK_ALLOWED_SYMBOLS is not configured; no symbol is tradable",
+                reason=(
+                    "HERMES_RISK_ALLOWED_SYMBOLS is not configured; "
+                    "no symbol is tradable"
+                ),
             )
         if request.symbol.upper() not in self._limits.allowed_symbols:
             return RiskDecision(
@@ -218,9 +221,7 @@ class RiskEngine:
         projected_exposure = (
             snapshot.current_symbol_exposure_quote + request.estimated_notional_quote
         )
-        projected_pct = (
-            projected_exposure / snapshot.total_portfolio_value_quote * 100
-        )
+        projected_pct = projected_exposure / snapshot.total_portfolio_value_quote * 100
         if projected_pct > limit:
             return RiskDecision(
                 approved=False,
@@ -247,9 +248,7 @@ class RiskEngine:
         projected_exposure = (
             snapshot.current_total_exposure_quote + request.estimated_notional_quote
         )
-        projected_pct = (
-            projected_exposure / snapshot.total_portfolio_value_quote * 100
-        )
+        projected_pct = projected_exposure / snapshot.total_portfolio_value_quote * 100
         if projected_pct > limit:
             return RiskDecision(
                 approved=False,
