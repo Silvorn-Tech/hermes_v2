@@ -1,9 +1,10 @@
 """AuditLogEntry — the durable, queryable record of every mutable trading
-action, per `SECURITY_AUDIT.md` §22's pre-registered requirement. Written by
-`OrderService`, never by a route handler directly, so every mutation is
-recorded exactly once regardless of which endpoint triggered it. Never
-stores a secret, header, or raw Binance payload — same discipline
-`BinanceClient` already enforces for its own error messages.
+action, per `SECURITY_AUDIT.md` §22's pre-registered requirement. Written
+by a service layer (`OrderService`, `BotService`), never by a route
+handler directly, so every mutation is recorded exactly once regardless of
+which endpoint triggered it. Never stores a secret, header, or raw Binance
+payload — same discipline `BinanceClient` already enforces for its own
+error messages.
 """
 
 from __future__ import annotations
