@@ -17,8 +17,10 @@ from fastapi.responses import JSONResponse, RedirectResponse
 from sqlalchemy.orm import Session, sessionmaker
 
 from hermes_v2.auth.google import GoogleAuthenticationError, verify_google_id_token
+from hermes_v2.auth.service import GoogleIdentityError, resolve_google_user
 from hermes_v2.auth.session import (
     create_session,
+    get_cookie_samesite,
     get_session_cookie_name,
     get_session_ttl,
     get_user_from_session,
@@ -26,7 +28,6 @@ from hermes_v2.auth.session import (
     revoke_session,
     serialize_authenticated_user,
 )
-from hermes_v2.auth.service import resolve_google_user
 from hermes_v2.database.connection import create_engine_from_environment
 
 _GOOGLE_AUTHORIZATION_URL = "https://accounts.google.com/o/oauth2/v2/auth"
@@ -37,6 +38,10 @@ _DEFAULT_STATE_TTL_SECONDS = 600
 class OAuthStateStore:
     """In-memory state storage with TTL for this single-process dev implementation.
 
+    Each entry also carries the validated frontend `return_to` URL requested
+    at `/auth/google/login`, so the callback knows where to send the user
+    back without trusting anything Google echoes back untrusted.
+
     This is intentionally limited to the current local deployment. Before any
     multi-worker or shared-state production deployment, replace it with a
     persistent, shared state store that is safe across processes and instances.
@@ -44,27 +49,32 @@ class OAuthStateStore:
 
     def __init__(self, ttl_seconds: int = _DEFAULT_STATE_TTL_SECONDS) -> None:
         self.ttl_seconds = ttl_seconds
-        self._entries: dict[str, float] = {}
+        self._entries: dict[str, tuple[float, str]] = {}
         self._lock = threading.Lock()
 
-    def create(self) -> str:
+    def create(self, return_to: str) -> str:
         state = secrets.token_urlsafe(32)
         expires_at = time.monotonic() + self.ttl_seconds
         with self._lock:
-            self._entries[state] = expires_at
+            self._entries[state] = (expires_at, return_to)
         return state
 
-    def consume(self, state: str | None) -> bool:
+    def consume(self, state: str | None) -> str | None:
+        """Consume a state token once, returning its return_to URL if still valid."""
         if not state or not state.strip():
-            return False
+            return None
 
         with self._lock:
-            expires_at = self._entries.pop(state, None)
+            entry = self._entries.pop(state, None)
 
-        if expires_at is None:
-            return False
+        if entry is None:
+            return None
 
-        return time.monotonic() <= expires_at
+        expires_at, return_to = entry
+        if time.monotonic() > expires_at:
+            return None
+
+        return return_to
 
 
 state_store = OAuthStateStore()
@@ -89,7 +99,44 @@ def _configured_google_redirect_uri() -> str:
     return _require_environment_value("GOOGLE_REDIRECT_URI")
 
 
-def _build_google_authorization_url() -> str:
+def _configured_allowed_return_uris() -> list[str]:
+    """Return the exact-match allowlist of frontend URLs the callback may redirect to.
+
+    This is the open-redirect guard for `return_to`: Google itself never
+    supplies this value, but a malicious link could try to pass an arbitrary
+    `return_to` to `/auth/google/login` to redirect a victim elsewhere after
+    a real Hermes login. Only exact matches configured server-side are honored.
+    """
+    raw_value = os.environ.get("HERMES_ALLOWED_RETURN_URIS", "")
+    return [entry.strip() for entry in raw_value.split(",") if entry.strip()]
+
+
+def _default_return_uri() -> str:
+    allowed = _configured_allowed_return_uris()
+    if not allowed:
+        raise RuntimeError("HERMES_ALLOWED_RETURN_URIS must be configured")
+
+    configured_default = os.environ.get("HERMES_DEFAULT_RETURN_URI")
+    if configured_default and configured_default in allowed:
+        return configured_default
+    return allowed[0]
+
+
+def _resolve_return_uri(requested: str | None) -> str:
+    if not requested:
+        return _default_return_uri()
+
+    if requested not in _configured_allowed_return_uris():
+        raise HTTPException(status_code=400, detail="Unsupported return_to value.")
+    return requested
+
+
+def _redirect_with_status(return_to: str, status: str) -> RedirectResponse:
+    separator = "&" if "?" in return_to else "?"
+    return RedirectResponse(url=f"{return_to}{separator}auth={status}", status_code=302)
+
+
+def _build_google_authorization_url(return_to: str) -> str:
     params = {
         "client_id": _configured_google_client_id(),
         "redirect_uri": _configured_google_redirect_uri(),
@@ -97,7 +144,7 @@ def _build_google_authorization_url() -> str:
         "scope": "openid email profile",
         "access_type": "offline",
         "prompt": "consent",
-        "state": state_store.create(),
+        "state": state_store.create(return_to),
     }
     return f"{_GOOGLE_AUTHORIZATION_URL}?{urlencode(params)}"
 
@@ -134,67 +181,92 @@ def _exchange_google_code(code: str) -> dict[str, Any]:
             return json.loads(body)
     except urllib.error.HTTPError as exc:
         exc.read().decode("utf-8", errors="replace")
-        raise HTTPException(
-            status_code=400, detail="Google token exchange failed"
-        ) from exc
+        raise GoogleTokenExchangeError("Google token exchange failed") from exc
     except (urllib.error.URLError, ValueError, json.JSONDecodeError) as exc:
-        raise HTTPException(
-            status_code=400, detail="Google token exchange failed"
-        ) from exc
+        raise GoogleTokenExchangeError("Google token exchange failed") from exc
 
 
-async def google_login() -> RedirectResponse:
-    """Redirect the user to Google's consent screen."""
-    return RedirectResponse(url=_build_google_authorization_url(), status_code=307)
+class GoogleTokenExchangeError(RuntimeError):
+    """Raised when exchanging an authorization code with Google fails."""
+
+
+async def google_login(return_to: str | None = None) -> RedirectResponse:
+    """Redirect the user to Google's consent screen.
+
+    `return_to` must exactly match an entry in HERMES_ALLOWED_RETURN_URIS —
+    it is where the browser lands back in the Hermes frontend once the
+    callback below finishes, success or not.
+    """
+    resolved_return_to = _resolve_return_uri(return_to)
+    return RedirectResponse(
+        url=_build_google_authorization_url(resolved_return_to), status_code=307
+    )
 
 
 async def google_callback(
     request: Request,
     code: str | None = None,
     state: str | None = None,
-) -> JSONResponse:
-    """Handle the Google callback and create a Hermes session cookie."""
+) -> JSONResponse | RedirectResponse:
+    """Handle the Google callback: set the Hermes session cookie, then hand
+    control back to the frontend via a redirect.
+
+    Nothing sensitive (tokens, user data) travels in that redirect — it only
+    carries a coarse `auth` status flag. The frontend calls GET /auth/me
+    afterwards to fetch the authenticated user through the cookie that was
+    just set on this same response.
+
+    A missing/invalid `state` cannot be redirected safely (there is no
+    trusted destination yet) and is rejected outright. Every failure mode
+    after that point is a normal, expected outcome of a real login attempt
+    (the user declined consent, the identity isn't authorized, Google had a
+    hiccup) and sends the user back to the app instead of showing a raw
+    JSON/error page.
+    """
     if not state or not state.strip():
         raise HTTPException(status_code=400, detail="Missing state parameter.")
-    if not state_store.consume(state):
+
+    return_to = state_store.consume(state)
+    if return_to is None:
         raise HTTPException(status_code=400, detail="Invalid or expired state.")
 
-    google_error = request.query_params.get("error")
-    if google_error:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Google OAuth error: {google_error}",
-        )
+    if request.query_params.get("error"):
+        return _redirect_with_status(return_to, "cancelled")
 
     if not code or not code.strip():
-        raise HTTPException(status_code=400, detail="Missing authorization code.")
+        return _redirect_with_status(return_to, "error")
 
-    token_response = _exchange_google_code(code)
+    try:
+        token_response = _exchange_google_code(code)
+    except GoogleTokenExchangeError:
+        return _redirect_with_status(return_to, "error")
+
     id_token = token_response.get("id_token")
     if not isinstance(id_token, str) or not id_token.strip():
-        raise HTTPException(status_code=400, detail="Google token exchange failed.")
+        return _redirect_with_status(return_to, "error")
 
     try:
         claims = verify_google_id_token(id_token)
-    except GoogleAuthenticationError as exc:
-        raise HTTPException(
-            status_code=400,
-            detail="Google authentication failed.",
-        ) from exc
+    except GoogleAuthenticationError:
+        return _redirect_with_status(return_to, "error")
 
     session_factory = _create_session_factory()
     with session_factory() as database_session:
-        user = resolve_google_user(database_session, claims)
+        try:
+            user = resolve_google_user(database_session, claims)
+        except GoogleIdentityError:
+            database_session.rollback()
+            return _redirect_with_status(return_to, "denied")
+
         _, raw_token = create_session(database_session, user, get_session_ttl())
-        safe_user = serialize_authenticated_user(user)
         database_session.commit()
 
-    response = JSONResponse(content={"authenticated": True, "user": safe_user})
+    response = _redirect_with_status(return_to, "success")
     response.set_cookie(
         key=get_session_cookie_name(),
         value=raw_token,
         httponly=True,
-        samesite="lax",
+        samesite=get_cookie_samesite(),
         path="/",
         secure=is_cookie_secure(),
     )
@@ -233,12 +305,13 @@ async def logout_user(request: Request) -> JSONResponse:
         key=get_session_cookie_name(),
         path="/",
         secure=is_cookie_secure(),
-        samesite="lax",
+        samesite=get_cookie_samesite(),
     )
     return response
 
 
 __all__ = [
+    "GoogleTokenExchangeError",
     "OAuthStateStore",
     "get_authenticated_user",
     "google_callback",
