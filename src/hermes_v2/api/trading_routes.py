@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import Callable
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any, Literal
 
@@ -42,6 +42,7 @@ from hermes_v2.trading.models import (
     OrderEvent,
     OrderEventType,
     OrderStatus,
+    PortfolioSnapshot,
     is_terminal_status,
 )
 from hermes_v2.trading.order_service import (
@@ -55,6 +56,11 @@ from hermes_v2.trading.order_service import (
 )
 from hermes_v2.trading.origin_check import require_trusted_origin
 from hermes_v2.trading.portfolio_service import PortfolioService
+from hermes_v2.trading.portfolio_snapshot_service import (
+    compute_max_drawdown_pct,
+    compute_return_pct,
+    downsample,
+)
 from hermes_v2.trading.positions_service import Position, PositionsService
 from hermes_v2.trading.rate_limiting import (
     CANCEL_ORDER_RATE_LIMITER,
@@ -299,6 +305,62 @@ async def get_balances(
         raise _http_exception_for_binance_error(exc) from exc
 
     return {"balances": [_serialize_balance(b) for b in balances]}
+
+
+# 1D stays at native (snapshot-interval) resolution; longer periods are
+# downsampled (see portfolio_snapshot_service.downsample) so the response
+# stays chart-sized regardless of how long history has accumulated.
+_PORTFOLIO_HISTORY_WINDOWS: dict[str, timedelta] = {
+    "1D": timedelta(days=1),
+    "7D": timedelta(days=7),
+    "30D": timedelta(days=30),
+    "90D": timedelta(days=90),
+    "1Y": timedelta(days=365),
+}
+_PORTFOLIO_HISTORY_DOWNSAMPLE_MINUTES: dict[str, int] = {
+    "1D": 0,
+    "7D": 60,
+    "30D": 240,
+    "90D": 720,
+    "1Y": 4320,
+}
+
+
+@router.get("/portfolio/history")
+async def get_portfolio_history(
+    period: Literal["1D", "7D", "30D", "90D", "1Y"] = Query(...),
+    current_user: dict = Depends(require_permission("portfolio.read")),
+) -> dict[str, Any]:
+    session_factory = _session_factory()
+    with session_factory() as session:
+        window = _PORTFOLIO_HISTORY_WINDOWS[period]
+        since = datetime.now(UTC) - window
+        rows = session.scalars(
+            select(PortfolioSnapshot)
+            .where(PortfolioSnapshot.snapshot_at >= since)
+            .order_by(PortfolioSnapshot.snapshot_at.asc())
+        ).all()
+
+        bucket_minutes = _PORTFOLIO_HISTORY_DOWNSAMPLE_MINUTES[period]
+        points = (
+            downsample(list(rows), bucket_minutes) if bucket_minutes else list(rows)
+        )
+        values = [point.total_value_quote for point in points]
+        return_pct = compute_return_pct(values)
+        max_drawdown_pct = compute_max_drawdown_pct(values)
+
+        return {
+            "period": period,
+            "quote_asset": points[0].quote_asset if points else _DEFAULT_QUOTE_ASSET,
+            "points": [
+                {"t": point.snapshot_at.isoformat(), "v": str(point.total_value_quote)}
+                for point in points
+            ],
+            "return_pct": str(return_pct) if return_pct is not None else None,
+            "max_drawdown_pct": (
+                str(max_drawdown_pct) if max_drawdown_pct is not None else None
+            ),
+        }
 
 
 @router.get("/market-data")
