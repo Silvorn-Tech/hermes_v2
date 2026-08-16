@@ -166,10 +166,10 @@ def test_unauthenticated_request_never_reaches_the_permission_check(
 def test_unknown_permission_is_rejected_at_construction_time() -> None:
     """A fictitious permission (not in PERMISSION_CATALOG) must fail
     immediately when the dependency is built, not silently at request
-    time — this is what stops an invented name like "bots.pause" from
+    time — this is what stops an invented name like "widgets.launch" from
     ever protecting (or failing to protect) a real endpoint."""
-    with pytest.raises(ValueError, match="bots.pause"):
-        require_permission("bots.pause")
+    with pytest.raises(ValueError, match="widgets.launch"):
+        require_permission("widgets.launch")
 
 
 def test_known_permissions_all_construct_successfully() -> None:

@@ -286,6 +286,8 @@ def test_successful_create_order_returns_201(
     body = response.json()
     assert body["status"] == "FILLED"
     assert body["order"]["symbol"] == "BTCUSDT"
+    # Regression: a manual order is never attributed to a bot.
+    assert body["order"]["bot_id"] is None
 
 
 def test_create_order_without_origin_header_is_403(

@@ -93,6 +93,7 @@ class PositionNotFoundError(OrderServiceError):
 def order_to_response(order: Order) -> dict[str, Any]:
     return {
         "id": str(order.id),
+        "bot_id": str(order.bot_id) if order.bot_id else None,
         "symbol": order.symbol,
         "side": order.side.value,
         "order_type": order.order_type.value,

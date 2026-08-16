@@ -85,6 +85,15 @@ class Order(Base):
         nullable=False,
         index=True,
     )
+    # NULL for every manual order — only set when a Bot's pause/resume
+    # placed this order (see hermes_v2.trading.bot_service). SET NULL on
+    # bot deletion (not implemented in v1) so a historical order never
+    # disappears just because its bot did.
+    bot_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("bots.id", ondelete="SET NULL"),
+        index=True,
+    )
     symbol: Mapped[str] = mapped_column(String(20), nullable=False, index=True)
     side: Mapped[OrderSide] = mapped_column(
         Enum(OrderSide, name="order_side"), nullable=False

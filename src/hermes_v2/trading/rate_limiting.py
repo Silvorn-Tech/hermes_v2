@@ -21,11 +21,21 @@ CANCEL_ORDER_RATE_LIMITER = SlidingWindowRateLimiter(max_requests=30, window_sec
 CLOSE_POSITION_RATE_LIMITER = SlidingWindowRateLimiter(
     max_requests=20, window_seconds=60
 )
+BOT_CREATE_RATE_LIMITER = SlidingWindowRateLimiter(max_requests=20, window_seconds=60)
+BOT_UPDATE_RATE_LIMITER = SlidingWindowRateLimiter(max_requests=30, window_seconds=60)
+BOT_PAUSE_RATE_LIMITER = SlidingWindowRateLimiter(max_requests=20, window_seconds=60)
+BOT_RESUME_RATE_LIMITER = SlidingWindowRateLimiter(max_requests=20, window_seconds=60)
+BOT_STOP_RATE_LIMITER = SlidingWindowRateLimiter(max_requests=20, window_seconds=60)
 
 _ALL_TRADING_RATE_LIMITERS = (
     CREATE_ORDER_RATE_LIMITER,
     CANCEL_ORDER_RATE_LIMITER,
     CLOSE_POSITION_RATE_LIMITER,
+    BOT_CREATE_RATE_LIMITER,
+    BOT_UPDATE_RATE_LIMITER,
+    BOT_PAUSE_RATE_LIMITER,
+    BOT_RESUME_RATE_LIMITER,
+    BOT_STOP_RATE_LIMITER,
 )
 
 
@@ -37,6 +47,11 @@ def reset_trading_rate_limiters() -> None:
 
 
 __all__ = [
+    "BOT_CREATE_RATE_LIMITER",
+    "BOT_PAUSE_RATE_LIMITER",
+    "BOT_RESUME_RATE_LIMITER",
+    "BOT_STOP_RATE_LIMITER",
+    "BOT_UPDATE_RATE_LIMITER",
     "CANCEL_ORDER_RATE_LIMITER",
     "CLOSE_POSITION_RATE_LIMITER",
     "CREATE_ORDER_RATE_LIMITER",
