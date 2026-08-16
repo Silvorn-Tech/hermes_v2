@@ -29,6 +29,28 @@ def is_cookie_secure() -> bool:
     return str(value).strip().lower() not in {"", "0", "false", "no", "off"}
 
 
+_VALID_SAMESITE_VALUES = {"lax", "strict", "none"}
+
+
+def get_cookie_samesite() -> str:
+    """Read the session cookie's SameSite policy from the environment.
+
+    Defaults to "lax", which is correct when the frontend and backend share
+    a site. A frontend served from a different origin (Romeo, production
+    behind a separate domain, or plain localhost-to-localhost development
+    across two ports) needs "none" — which browsers only honor together
+    with a Secure cookie, so pair HERMES_COOKIE_SAMESITE=none with
+    HERMES_COOKIE_SECURE=true.
+    """
+    value = os.environ.get("HERMES_COOKIE_SAMESITE", "lax").strip().lower()
+    if value not in _VALID_SAMESITE_VALUES:
+        raise ValueError(
+            "HERMES_COOKIE_SAMESITE must be one of: "
+            + ", ".join(sorted(_VALID_SAMESITE_VALUES))
+        )
+    return value
+
+
 def get_session_ttl() -> timedelta:
     """Return the configured Hermes session TTL in seconds."""
     raw_value = os.environ.get(

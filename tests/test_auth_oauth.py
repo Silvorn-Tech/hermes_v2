@@ -18,12 +18,21 @@ os.environ.setdefault(
     "GOOGLE_REDIRECT_URI",
     "http://localhost:8000/auth/google/callback",
 )
+os.environ.setdefault(
+    "HERMES_ALLOWED_RETURN_URIS",
+    "http://localhost:8081/login,hermes:///login",
+)
+os.environ.setdefault("HERMES_ALLOWED_ORIGINS", "http://localhost:8081")
 
 from hermes_v2.api.app import app
 import hermes_v2.auth.oauth as oauth_module
 from hermes_v2.auth.models import Role, User
+from hermes_v2.auth.service import GoogleUserDisabledError, GoogleUserNotFoundError
 from hermes_v2.auth.session import serialize_authenticated_user
 from hermes_v2.database.connection import create_engine_from_environment
+
+DEFAULT_RETURN_TO = "http://localhost:8081/login"
+ALT_RETURN_TO = "hermes:///login"
 
 
 @pytest.fixture(autouse=True)
@@ -34,6 +43,9 @@ def google_environment(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv(
         "GOOGLE_REDIRECT_URI",
         "http://localhost:8000/auth/google/callback",
+    )
+    monkeypatch.setenv(
+        "HERMES_ALLOWED_RETURN_URIS", f"{DEFAULT_RETURN_TO},{ALT_RETURN_TO}"
     )
 
     class FakeSession:
@@ -139,10 +151,12 @@ def test_callback_with_missing_code_is_rejected() -> None:
     login_response = client.get("/auth/google/login", follow_redirects=False)
     state = _extract_state_from_redirect(login_response.headers["location"])
 
-    response = client.get(f"/auth/google/callback?state={state}")
+    response = client.get(
+        f"/auth/google/callback?state={state}", follow_redirects=False
+    )
 
-    assert response.status_code == 400
-    assert "code" in response.json()["detail"].lower()
+    assert response.status_code == 302
+    assert response.headers["location"] == f"{DEFAULT_RETURN_TO}?auth=error"
 
 
 def test_google_token_exchange_is_mocked(monkeypatch) -> None:
@@ -159,9 +173,13 @@ def test_google_token_exchange_is_mocked(monkeypatch) -> None:
 
     monkeypatch.setattr("hermes_v2.auth.oauth._exchange_google_code", fake_exchange)
 
-    response = client.get(f"/auth/google/callback?code=example-code&state={state}")
+    response = client.get(
+        f"/auth/google/callback?code=example-code&state={state}",
+        follow_redirects=False,
+    )
 
-    assert response.status_code == 400
+    assert response.status_code == 302
+    assert response.headers["location"] == f"{DEFAULT_RETURN_TO}?auth=error"
     assert called["value"] is True
 
 
@@ -196,9 +214,13 @@ def test_verify_google_id_token_is_mocked(monkeypatch) -> None:
         ),
     )
 
-    response = client.get(f"/auth/google/callback?code=example-code&state={state}")
+    response = client.get(
+        f"/auth/google/callback?code=example-code&state={state}",
+        follow_redirects=False,
+    )
 
-    assert response.status_code == 200
+    assert response.status_code == 302
+    assert response.headers["location"] == f"{DEFAULT_RETURN_TO}?auth=success"
     assert captured["token"] == "google-id-token"
 
 
@@ -235,13 +257,24 @@ def test_resolve_google_user_is_mocked(monkeypatch) -> None:
 
     monkeypatch.setattr("hermes_v2.auth.oauth.resolve_google_user", fake_resolve)
 
-    response = client.get(f"/auth/google/callback?code=example-code&state={state}")
+    response = client.get(
+        f"/auth/google/callback?code=example-code&state={state}",
+        follow_redirects=False,
+    )
 
-    assert response.status_code == 200
+    assert response.status_code == 302
+    assert response.headers["location"] == f"{DEFAULT_RETURN_TO}?auth=success"
     assert called["value"] is True
 
 
-def test_successful_callback_returns_safe_user_response(monkeypatch) -> None:
+def test_successful_callback_redirects_to_return_to_with_success_status(
+    monkeypatch,
+) -> None:
+    """The callback hands control back to the frontend via redirect, not JSON.
+
+    User details never travel in this response (or its URL) — the frontend
+    fetches them afterwards from GET /auth/me using the cookie set here.
+    """
     client = TestClient(app)
     login_response = client.get("/auth/google/login", follow_redirects=False)
     state = _extract_state_from_redirect(login_response.headers["location"])
@@ -269,20 +302,151 @@ def test_successful_callback_returns_safe_user_response(monkeypatch) -> None:
         ),
     )
 
-    response = client.get(f"/auth/google/callback?code=example-code&state={state}")
+    response = client.get(
+        f"/auth/google/callback?code=example-code&state={state}",
+        follow_redirects=False,
+    )
 
-    expected = {
-        "authenticated": True,
-        "user": {
-            "id": "user-abc",
-            "email": "safe@example.com",
-            "display_name": "Safe User",
-            "roles": ["ADMIN", "USER"],
+    assert response.status_code == 302
+    assert response.headers["location"] == f"{DEFAULT_RETURN_TO}?auth=success"
+    assert "safe@example.com" not in response.text
+    assert "user-abc" not in response.text
+
+
+def test_callback_redirects_to_the_return_to_requested_at_login(monkeypatch) -> None:
+    """The callback must honor the allowlisted return_to the login step recorded."""
+    client = TestClient(app)
+    login_response = client.get(
+        f"/auth/google/login?return_to={ALT_RETURN_TO}", follow_redirects=False
+    )
+    state = _extract_state_from_redirect(login_response.headers["location"])
+
+    monkeypatch.setattr(
+        "hermes_v2.auth.oauth._exchange_google_code",
+        lambda code: {"id_token": "google-id-token"},
+    )
+    monkeypatch.setattr(
+        "hermes_v2.auth.oauth.verify_google_id_token",
+        lambda token: {
+            "sub": "google-sub-alt",
+            "email": "alt@example.com",
+            "email_verified": True,
+            "iss": "https://accounts.google.com",
         },
-    }
+    )
+    monkeypatch.setattr(
+        "hermes_v2.auth.oauth.resolve_google_user",
+        lambda session, claims: SimpleNamespace(
+            id="user-alt",
+            email="alt@example.com",
+            display_name="Alt User",
+            roles=[],
+        ),
+    )
 
-    assert response.status_code == 200
-    assert response.json() == expected
+    response = client.get(
+        f"/auth/google/callback?code=example-code&state={state}",
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 302
+    assert response.headers["location"] == f"{ALT_RETURN_TO}?auth=success"
+
+
+def test_login_rejects_unlisted_return_to() -> None:
+    client = TestClient(app)
+
+    response = client.get(
+        "/auth/google/login?return_to=https://evil.example.com/steal",
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 400
+
+
+def test_google_error_redirects_with_cancelled_status() -> None:
+    client = TestClient(app)
+    login_response = client.get("/auth/google/login", follow_redirects=False)
+    state = _extract_state_from_redirect(login_response.headers["location"])
+
+    response = client.get(
+        f"/auth/google/callback?state={state}&error=access_denied",
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 302
+    assert response.headers["location"] == f"{DEFAULT_RETURN_TO}?auth=cancelled"
+
+
+def test_unauthorized_user_redirects_with_denied_status_not_a_server_error(
+    monkeypatch,
+) -> None:
+    """A validly-authenticated but unauthorized identity must not crash."""
+    client = TestClient(app)
+    login_response = client.get("/auth/google/login", follow_redirects=False)
+    state = _extract_state_from_redirect(login_response.headers["location"])
+
+    monkeypatch.setattr(
+        "hermes_v2.auth.oauth._exchange_google_code",
+        lambda code: {"id_token": "google-id-token"},
+    )
+    monkeypatch.setattr(
+        "hermes_v2.auth.oauth.verify_google_id_token",
+        lambda token: {
+            "sub": "google-sub-unknown",
+            "email": "not-invited@example.com",
+            "email_verified": True,
+            "iss": "https://accounts.google.com",
+        },
+    )
+
+    def fake_resolve(session, claims):
+        raise GoogleUserNotFoundError("not authorized")
+
+    monkeypatch.setattr("hermes_v2.auth.oauth.resolve_google_user", fake_resolve)
+
+    response = client.get(
+        f"/auth/google/callback?code=example-code&state={state}",
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 302
+    assert response.headers["location"] == f"{DEFAULT_RETURN_TO}?auth=denied"
+    assert "not-invited@example.com" not in response.text
+    assert "set-cookie" not in {k.lower() for k in response.headers.keys()}
+
+
+def test_disabled_user_redirects_with_denied_status(monkeypatch) -> None:
+    client = TestClient(app)
+    login_response = client.get("/auth/google/login", follow_redirects=False)
+    state = _extract_state_from_redirect(login_response.headers["location"])
+
+    monkeypatch.setattr(
+        "hermes_v2.auth.oauth._exchange_google_code",
+        lambda code: {"id_token": "google-id-token"},
+    )
+    monkeypatch.setattr(
+        "hermes_v2.auth.oauth.verify_google_id_token",
+        lambda token: {
+            "sub": "google-sub-disabled",
+            "email": "disabled@example.com",
+            "email_verified": True,
+            "iss": "https://accounts.google.com",
+        },
+    )
+
+    def fake_resolve(session, claims):
+        raise GoogleUserDisabledError("disabled")
+
+    monkeypatch.setattr("hermes_v2.auth.oauth.resolve_google_user", fake_resolve)
+
+    response = client.get(
+        f"/auth/google/callback?code=example-code&state={state}",
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 302
+    assert response.headers["location"] == f"{DEFAULT_RETURN_TO}?auth=denied"
 
 
 def test_serialize_user_with_lazy_roles_while_session_is_active() -> None:
@@ -351,16 +515,19 @@ def test_callback_response_excludes_google_tokens_and_secrets(monkeypatch) -> No
         ),
     )
 
-    response = client.get(f"/auth/google/callback?code=example-code&state={state}")
-    body = response.json()
+    response = client.get(
+        f"/auth/google/callback?code=example-code&state={state}",
+        follow_redirects=False,
+    )
 
-    assert response.status_code == 200
-    assert "access_token" not in body
-    assert "refresh_token" not in body
-    assert "id_token" not in body
-    assert "client_secret" not in body
-    assert "authorization_code" not in body
-    assert response.text.lower().count("token") == 0
+    assert response.status_code == 302
+    assert response.headers["location"] == f"{DEFAULT_RETURN_TO}?auth=success"
+    assert "google-access-token" not in response.headers["location"]
+    assert "google-refresh-token" not in response.headers["location"]
+    assert "google-id-token" not in response.headers["location"]
+    assert "test-client-secret" not in response.headers["location"]
+    assert "token" not in response.text.lower()
+    assert "example.com" not in response.text
 
 
 def test_successful_callback_sets_hermes_session_cookie(monkeypatch) -> None:
@@ -392,10 +559,13 @@ def test_successful_callback_sets_hermes_session_cookie(monkeypatch) -> None:
     )
     monkeypatch.setenv("HERMES_COOKIE_SECURE", "false")
 
-    response = client.get(f"/auth/google/callback?code=example-code&state={state}")
+    response = client.get(
+        f"/auth/google/callback?code=example-code&state={state}",
+        follow_redirects=False,
+    )
     set_cookie = response.headers.get("set-cookie", "")
 
-    assert response.status_code == 200
+    assert response.status_code == 302
     assert "hermes_session=" in set_cookie
     assert "HttpOnly" in set_cookie
     assert "samesite=lax" in set_cookie.lower()
@@ -432,11 +602,53 @@ def test_successful_callback_sets_secure_cookie_when_enabled(monkeypatch) -> Non
     )
     monkeypatch.setenv("HERMES_COOKIE_SECURE", "true")
 
-    response = client.get(f"/auth/google/callback?code=example-code&state={state}")
+    response = client.get(
+        f"/auth/google/callback?code=example-code&state={state}",
+        follow_redirects=False,
+    )
     set_cookie = response.headers.get("set-cookie", "")
 
-    assert response.status_code == 200
+    assert response.status_code == 302
     assert "secure" in set_cookie.lower()
+
+
+def test_cookie_samesite_is_configurable(monkeypatch) -> None:
+    client = TestClient(app)
+    login_response = client.get("/auth/google/login", follow_redirects=False)
+    state = _extract_state_from_redirect(login_response.headers["location"])
+
+    monkeypatch.setattr(
+        "hermes_v2.auth.oauth._exchange_google_code",
+        lambda code: {"id_token": "google-id-token"},
+    )
+    monkeypatch.setattr(
+        "hermes_v2.auth.oauth.verify_google_id_token",
+        lambda token: {
+            "sub": "google-sub-samesite",
+            "email": "samesite@example.com",
+            "email_verified": True,
+            "iss": "https://accounts.google.com",
+        },
+    )
+    monkeypatch.setattr(
+        "hermes_v2.auth.oauth.resolve_google_user",
+        lambda session, claims: SimpleNamespace(
+            id="user-samesite",
+            email="samesite@example.com",
+            display_name="Samesite User",
+            roles=[],
+        ),
+    )
+    monkeypatch.setenv("HERMES_COOKIE_SAMESITE", "none")
+    monkeypatch.setenv("HERMES_COOKIE_SECURE", "true")
+
+    response = client.get(
+        f"/auth/google/callback?code=example-code&state={state}",
+        follow_redirects=False,
+    )
+    set_cookie = response.headers.get("set-cookie", "")
+
+    assert "samesite=none" in set_cookie.lower()
 
 
 def test_auth_me_requires_cookie(monkeypatch) -> None:
@@ -534,3 +746,40 @@ def test_logout_is_idempotent_without_cookie(monkeypatch) -> None:
 
     assert response.status_code == 200
     assert response.json() == {"status": "ok"}
+
+
+def test_cors_allows_configured_frontend_origin_with_credentials() -> None:
+    """HERMES_ALLOWED_ORIGINS is set to http://localhost:8081 at module import
+    for this test module (see top of file) — that's the only origin this
+    assertion can exercise, since CORSMiddleware is configured once at app
+    startup, not per-request.
+    """
+    client = TestClient(app)
+
+    response = client.get("/health", headers={"Origin": "http://localhost:8081"})
+
+    assert (
+        response.headers.get("access-control-allow-origin") == "http://localhost:8081"
+    )
+    assert response.headers.get("access-control-allow-credentials") == "true"
+
+
+def test_cors_rejects_unconfigured_origin() -> None:
+    client = TestClient(app)
+
+    response = client.get("/health", headers={"Origin": "https://evil.example.com"})
+
+    assert (
+        response.headers.get("access-control-allow-origin")
+        != "https://evil.example.com"
+    )
+
+
+def test_cors_never_falls_back_to_wildcard_origin() -> None:
+    """Access-Control-Allow-Origin: * is incompatible with credentialed
+    cookie-based requests — browsers reject it outright. Guard against a
+    misconfiguration regressing this.
+    """
+    from hermes_v2.api.app import _configured_allowed_origins
+
+    assert "*" not in _configured_allowed_origins()
