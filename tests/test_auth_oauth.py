@@ -764,6 +764,32 @@ def test_cors_allows_configured_frontend_origin_with_credentials() -> None:
     assert response.headers.get("access-control-allow-credentials") == "true"
 
 
+@pytest.mark.parametrize("method", ["GET", "POST", "PATCH", "DELETE"])
+def test_cors_preflight_allows_every_method_the_api_actually_uses(
+    method: str,
+) -> None:
+    """A method missing from CORSMiddleware's `allow_methods` doesn't 403
+    the real request -- it fails the browser's own `OPTIONS` preflight
+    with a 400 *before* the real request is ever sent, so the route looks
+    entirely unreachable cross-origin. Regression guard for exactly this:
+    `PATCH /bots/{id}` and `DELETE /bots/{id}` both silently broke this
+    way in production (observed as a 400 on the preflight in ROMEO's
+    logs) because `allow_methods` only listed `GET`/`POST`.
+    """
+    client = TestClient(app)
+
+    response = client.options(
+        "/bots/00000000-0000-0000-0000-000000000000",
+        headers={
+            "Origin": "http://localhost:8081",
+            "Access-Control-Request-Method": method,
+        },
+    )
+
+    assert response.status_code == 200
+    assert method in response.headers.get("access-control-allow-methods", "")
+
+
 def test_cors_rejects_unconfigured_origin() -> None:
     client = TestClient(app)
 
