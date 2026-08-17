@@ -426,6 +426,25 @@ async def get_market_data_route(
         raise _http_exception_for_binance_error(exc) from exc
 
 
+@router.get("/exchange-info")
+async def get_exchange_info_route(
+    symbol: str = Query(..., min_length=1, max_length=20),
+    current_user: dict = Depends(require_permission("portfolio.read")),
+) -> dict[str, Any]:
+    """Public trading rules (quantity/price precision, min notional) for
+    `symbol` -- lets a caller round a quantity to a valid step size *before*
+    submitting an order, rather than discovering the mismatch only from a
+    rejected order. Same public, unsigned Binance call `OrderValidator`
+    already uses internally; exposed here so the frontend's budget-based
+    quantity calculator can round to it instead of guessing.
+    """
+    client = _new_public_binance_client()
+    try:
+        return await run_in_threadpool(client.get_exchange_info, symbol.upper())
+    except BinanceError as exc:
+        raise _http_exception_for_binance_error(exc) from exc
+
+
 @router.get("/positions")
 async def get_positions(
     current_user: dict = Depends(require_permission("positions.read")),

@@ -565,6 +565,17 @@ def test_get_market_data(
     assert response.json()["last_price"] == "50000"
 
 
+def test_get_exchange_info(
+    authorized_client: tuple[TestClient, _FakeBinanceClient],
+) -> None:
+    client, _fake = authorized_client
+    response = client.get("/exchange-info", params={"symbol": "BTCUSDT"})
+    assert response.status_code == 200
+    body = response.json()
+    assert body["symbol"] == "BTCUSDT"
+    assert body["filters"]["step_size"] == "0.0001"
+
+
 # --- credential-less user (never connected a Binance account) -------------------
 
 
@@ -632,6 +643,16 @@ def test_market_data_still_works_without_credentials(
     must never require a connected account."""
     client, _fake = credential_less_client
     response = client.get("/market-data", params={"symbol": "BTCUSDT"})
+    assert response.status_code == 200
+
+
+def test_exchange_info_still_works_without_credentials(
+    credential_less_client: tuple[TestClient, _FakeBinanceClient],
+) -> None:
+    """Same public, unsigned Binance endpoint as /market-data -- must never
+    require a connected account."""
+    client, _fake = credential_less_client
+    response = client.get("/exchange-info", params={"symbol": "BTCUSDT"})
     assert response.status_code == 200
 
 
