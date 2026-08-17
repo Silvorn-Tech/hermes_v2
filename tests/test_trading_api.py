@@ -143,6 +143,39 @@ def db_session() -> Session:
 
 
 @pytest.fixture()
+def credential_less_client(
+    monkeypatch: pytest.MonkeyPatch, db_session: Session
+) -> tuple[TestClient, _FakeBinanceClient]:
+    """Same authenticated, permissioned user as `authorized_client`, but
+    one who has never connected a Binance account -- exercises the 409
+    "connect your account" path every credential-gated route must
+    produce. `get_decrypted_client` is deliberately left unpatched here
+    (unlike `authorized_client`) so it genuinely raises
+    CredentialsNotConfiguredError; only the public, unsigned
+    `BinanceClient()` construction (used by `/market-data`) is faked, so
+    that route never makes a real network call."""
+    monkeypatch.setenv("TRADING_ENABLED", "true")
+    monkeypatch.setenv("HERMES_ALLOWED_ORIGINS", _ALLOWED_ORIGIN)
+
+    seed_authorization_data(db_session)
+    user = User(email="no-credentials@example.com")
+    db_session.add(user)
+    db_session.flush()
+    super_admin = db_session.scalar(select(Role).where(Role.name == "SUPER_ADMIN"))
+    user.roles.append(super_admin)
+    save_user_risk_limits(db_session, user.id, _PERMISSIVE_RISK_LIMITS)
+    _, raw_token = create_session(db_session, user, timedelta(hours=1))
+    db_session.commit()
+
+    fake_client = _FakeBinanceClient()
+    monkeypatch.setattr(trading_routes, "BinanceClient", lambda *a, **kw: fake_client)
+
+    client = TestClient(app)
+    client.cookies.set("hermes_session", raw_token)
+    return client, fake_client
+
+
+@pytest.fixture()
 def authorized_client(
     monkeypatch: pytest.MonkeyPatch, db_session: Session
 ) -> tuple[TestClient, _FakeBinanceClient]:
@@ -166,7 +199,10 @@ def authorized_client(
     db_session.commit()
 
     fake_client = _FakeBinanceClient()
-    monkeypatch.setattr(trading_routes, "BinanceClient", lambda: fake_client)
+    monkeypatch.setattr(trading_routes, "BinanceClient", lambda *a, **kw: fake_client)
+    monkeypatch.setattr(
+        trading_routes, "get_decrypted_client", lambda session, user_id: fake_client
+    )
 
     client = TestClient(app)
     client.cookies.set("hermes_session", raw_token)
@@ -529,6 +565,88 @@ def test_get_market_data(
     assert response.json()["last_price"] == "50000"
 
 
+# --- credential-less user (never connected a Binance account) -------------------
+
+
+def test_portfolio_without_credentials_is_409(
+    credential_less_client: tuple[TestClient, _FakeBinanceClient],
+) -> None:
+    client, _fake = credential_less_client
+    response = client.get("/portfolio")
+    assert response.status_code == 409
+    assert response.json()["detail"]["available"] is False
+
+
+def test_balances_without_credentials_is_409(
+    credential_less_client: tuple[TestClient, _FakeBinanceClient],
+) -> None:
+    client, _fake = credential_less_client
+    response = client.get("/balances")
+    assert response.status_code == 409
+
+
+def test_positions_without_credentials_is_409(
+    credential_less_client: tuple[TestClient, _FakeBinanceClient],
+) -> None:
+    client, _fake = credential_less_client
+    response = client.get("/positions")
+    assert response.status_code == 409
+
+
+def test_create_order_without_credentials_is_409(
+    credential_less_client: tuple[TestClient, _FakeBinanceClient],
+) -> None:
+    client, _fake = credential_less_client
+    response = client.post(
+        "/orders",
+        json={"symbol": "BTCUSDT", "side": "BUY", "type": "MARKET", "quantity": "0.01"},
+        headers=_headers(),
+    )
+    assert response.status_code == 409
+    assert response.json()["detail"]["available"] is False
+
+
+def test_cancel_order_without_credentials_is_409(
+    credential_less_client: tuple[TestClient, _FakeBinanceClient],
+) -> None:
+    client, _fake = credential_less_client
+    response = client.post(
+        "/orders/00000000-0000-0000-0000-000000000000/cancel",
+        headers=_headers("cancel-key-1"),
+    )
+    assert response.status_code == 409
+
+
+def test_close_position_without_credentials_is_409(
+    credential_less_client: tuple[TestClient, _FakeBinanceClient],
+) -> None:
+    client, _fake = credential_less_client
+    response = client.post("/positions/BTCUSDT/close", headers=_headers("close-key-1"))
+    assert response.status_code == 409
+
+
+def test_market_data_still_works_without_credentials(
+    credential_less_client: tuple[TestClient, _FakeBinanceClient],
+) -> None:
+    """/market-data hits only Binance's public, unsigned endpoint -- it
+    must never require a connected account."""
+    client, _fake = credential_less_client
+    response = client.get("/market-data", params={"symbol": "BTCUSDT"})
+    assert response.status_code == 200
+
+
+def test_list_orders_degrades_gracefully_without_credentials(
+    credential_less_client: tuple[TestClient, _FakeBinanceClient],
+) -> None:
+    """A read must never 5xx (or 409) just because reconciliation has no
+    account to reconcile against -- it returns whatever's already
+    persisted, unreconciled."""
+    client, _fake = credential_less_client
+    response = client.get("/orders")
+    assert response.status_code == 200
+    assert response.json()["orders"] == []
+
+
 # --- Binance error propagation --------------------------------------------------
 
 
@@ -636,7 +754,10 @@ def test_get_order_belonging_to_another_user_is_404(
     db_session.commit()
 
     fake_client = _FakeBinanceClient()
-    monkeypatch.setattr(trading_routes, "BinanceClient", lambda: fake_client)
+    monkeypatch.setattr(trading_routes, "BinanceClient", lambda *a, **kw: fake_client)
+    monkeypatch.setattr(
+        trading_routes, "get_decrypted_client", lambda session, user_id: fake_client
+    )
 
     owner_client = TestClient(app)
     owner_client.cookies.set("hermes_session", owner_token)
