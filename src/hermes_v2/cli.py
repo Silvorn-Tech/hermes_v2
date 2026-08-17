@@ -76,19 +76,28 @@ def binance_check() -> int:
             return None
 
     _run("Binance connection", client.ping)
-    account = _run("Account", client.get_account_info)
+    _run("Account", client.get_account_info)
     _run("Balances", client.get_balances)
     _run("Market data", lambda: client.get_market_data(_BINANCE_DIAGNOSTIC_SYMBOL))
     _run("Open orders", client.get_open_orders)
 
-    if account is None:
-        print("Permissions: UNKNOWN (account check failed)")
+    # Deliberately not `account.get("can_withdraw")` from the "Account"
+    # check above -- that field reflects the account's overall withdrawal
+    # eligibility (KYC/verification status), not this specific key's
+    # "Enable Withdrawals" checkbox, so it's `true` for any verified
+    # account regardless of which key was used. get_api_key_permissions()
+    # reads Binance's dedicated key-permissions endpoint instead.
+    try:
+        permissions = client.get_api_key_permissions()
+    except BinanceError as error:
+        print(f"Permissions: FAIL ({error})")
         failures.append("Permissions")
-    elif account.get("can_withdraw") is False:
-        print("Permissions: READ_ONLY")
     else:
-        print("Permissions: UNSAFE (withdrawals are enabled on this API key)")
-        failures.append("Permissions")
+        if permissions.get("can_withdraw") is False:
+            print("Permissions: READ_ONLY")
+        else:
+            print("Permissions: UNSAFE (withdrawals are enabled on this API key)")
+            failures.append("Permissions")
 
     return 1 if failures else 0
 

@@ -40,10 +40,16 @@ class _FakeClient:
         ping_error: Exception | None = None,
         account: dict | None = None,
         account_error: Exception | None = None,
+        permissions: dict | None = None,
+        permissions_error: Exception | None = None,
     ) -> None:
         self._ping_error = ping_error
         self._account = account if account is not None else {"can_withdraw": False}
         self._account_error = account_error
+        self._permissions = (
+            permissions if permissions is not None else {"can_withdraw": False}
+        )
+        self._permissions_error = permissions_error
 
     def ping(self) -> bool:
         if self._ping_error:
@@ -54,6 +60,11 @@ class _FakeClient:
         if self._account_error:
             raise self._account_error
         return self._account
+
+    def get_api_key_permissions(self) -> dict:
+        if self._permissions_error:
+            raise self._permissions_error
+        return self._permissions
 
     def get_balances(self) -> list:
         return []
@@ -86,7 +97,7 @@ def test_binance_check_fails_when_withdrawals_are_enabled(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
 ) -> None:
     monkeypatch.setattr(
-        cli, "BinanceClient", lambda: _FakeClient(account={"can_withdraw": True})
+        cli, "BinanceClient", lambda: _FakeClient(permissions={"can_withdraw": True})
     )
 
     exit_code = cli.binance_check()

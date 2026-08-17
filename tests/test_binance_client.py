@@ -141,6 +141,28 @@ def test_get_account_info_signs_request_and_returns_minimal_fields() -> None:
     assert signature == expected_signature
 
 
+def test_get_api_key_permissions_signs_request_and_reads_enable_withdrawals() -> None:
+    """Distinct from `get_account_info()`'s `can_withdraw`: this hits
+    Binance's dedicated key-permissions endpoint, which reflects the
+    specific key's "Enable Withdrawals" checkbox rather than the
+    account's overall eligibility."""
+    payload = {
+        "ipRestrict": True,
+        "enableReading": True,
+        "enableWithdrawals": False,
+        "enableSpotAndMarginTrading": True,
+    }
+    session = _FakeSession(response=_FakeResponse(json_data=payload))
+    client = _make_client(session)
+
+    result = client.get_api_key_permissions()
+
+    assert result == {"can_withdraw": False}
+    call = session.calls[0]
+    assert call["url"].endswith("/sapi/v1/account/apiRestrictions")
+    assert call["headers"] == {"X-MBX-APIKEY": _FAKE_API_KEY}
+
+
 def test_get_balances_filters_zero_and_parses_fields() -> None:
     payload = {
         "balances": [
@@ -326,8 +348,8 @@ def test_credentials_never_appear_in_exceptions_or_logs(
 
 
 def test_client_exposes_no_write_beyond_orders() -> None:
-    """Whitelist, not an allowlist-by-omission: exactly these ten methods may
-    exist on BinanceClient. Funds-movement methods (withdraw, transfer,
+    """Whitelist, not an allowlist-by-omission: exactly these eleven methods
+    may exist on BinanceClient. Funds-movement methods (withdraw, transfer,
     deposit address management) must never be added here, in any phase."""
     forbidden_names = {
         "withdraw",
@@ -347,6 +369,7 @@ def test_client_exposes_no_write_beyond_orders() -> None:
     assert exposed == {
         "ping",
         "get_account_info",
+        "get_api_key_permissions",
         "get_balances",
         "get_market_data",
         "get_open_orders",

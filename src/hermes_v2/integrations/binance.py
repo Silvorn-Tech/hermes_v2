@@ -145,10 +145,12 @@ def _extract_symbol_filters(symbol_info: dict[str, Any]) -> dict[str, Any]:
 class BinanceClient:
     """Minimal Binance REST client — reads plus the minimum write surface.
 
-    Exposes exactly ten capabilities: the five read-only methods from Phase
-    1 (`ping`, `get_account_info`, `get_balances`, `get_market_data`,
+    Exposes exactly eleven capabilities: the five read-only methods from
+    Phase 1 (`ping`, `get_account_info`, `get_balances`, `get_market_data`,
     `get_open_orders`) plus five added in Phase 2 (`create_order`,
-    `cancel_order`, `get_order`, `get_trades`, `get_exchange_info`). Nothing
+    `cancel_order`, `get_order`, `get_trades`, `get_exchange_info`) plus
+    `get_api_key_permissions`, added to check a key's own withdrawal
+    permission rather than the account's overall eligibility. Nothing
     that withdraws, transfers, or manages deposit addresses exists here or
     ever should.
     """
@@ -330,6 +332,13 @@ class BinanceClient:
         account payload (which also includes balances, commission rates,
         and permission lists) — callers that need balances use
         `get_balances()` instead.
+
+        `can_withdraw` here reflects the *account's* overall eligibility
+        (KYC/verification status) per Binance's own docs, not what this
+        specific API key is scoped to — a fully-verified account reports
+        `canWithdraw: true` no matter which key made the call, even one
+        with "Enable Withdrawals" unchecked. Use `get_api_key_permissions()`
+        to check the key's own permission flags instead.
         """
         payload = self._get("/api/v3/account", signed=True)
         return {
@@ -338,6 +347,15 @@ class BinanceClient:
             "can_withdraw": payload.get("canWithdraw"),
             "can_deposit": payload.get("canDeposit"),
         }
+
+    def get_api_key_permissions(self) -> dict[str, Any]:
+        """Whether *this specific API key* has withdrawals enabled, via
+        Binance's dedicated key-permissions endpoint. Unlike
+        `get_account_info()`'s `can_withdraw`, this reflects the "Enable
+        Withdrawals" checkbox on the key itself.
+        """
+        payload = self._get("/sapi/v1/account/apiRestrictions", signed=True)
+        return {"can_withdraw": payload.get("enableWithdrawals")}
 
     def get_balances(self) -> list[dict[str, Any]]:
         """Non-zero account balances only — asset, free, locked, nothing else."""

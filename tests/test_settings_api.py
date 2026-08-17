@@ -35,18 +35,13 @@ class _FakeBinanceClient:
     ) -> None:
         self.can_withdraw = can_withdraw
         self.error = error
-        self.get_account_info_calls = 0
+        self.get_api_key_permissions_calls = 0
 
-    def get_account_info(self) -> dict:
-        self.get_account_info_calls += 1
+    def get_api_key_permissions(self) -> dict:
+        self.get_api_key_permissions_calls += 1
         if self.error is not None:
             raise self.error
-        return {
-            "account_type": "SPOT",
-            "can_trade": True,
-            "can_withdraw": self.can_withdraw,
-            "can_deposit": True,
-        }
+        return {"can_withdraw": self.can_withdraw}
 
 
 @pytest.fixture()
@@ -196,7 +191,7 @@ def test_connect_credentials_verifies_and_persists(
     assert body["connected"] is True
     assert body["api_key_last4"] == "1234"
     assert body["verified_at"] is not None
-    assert fake.get_account_info_calls == 1
+    assert fake.get_api_key_permissions_calls == 1
 
     status_response = client.get("/settings/binance-credentials")
     assert status_response.json()["configured"] is True
