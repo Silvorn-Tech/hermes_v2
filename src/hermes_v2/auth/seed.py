@@ -28,6 +28,7 @@ PERMISSION_CATALOG = {
     "bots.pause": "Pause a bot (closes its position).",
     "bots.resume": "Resume a bot (reopens its position).",
     "bots.stop": "Permanently stop a bot.",
+    "bots.delete": "Permanently delete a bot (only while PAUSED or STOPPED).",
     "risk.read": "Read risk data.",
     "risk.manage": "Manage risk settings.",
     "secrets.read": "Read managed secret metadata and values.",

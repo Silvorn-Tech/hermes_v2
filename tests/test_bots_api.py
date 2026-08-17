@@ -367,3 +367,110 @@ def test_update_bot_only_allowed_while_paused(
         headers=_headers("update-key-2"),
     )
     assert blocked_response.status_code == 409
+
+
+# --- delete -------------------------------------------------------------------
+
+
+def test_delete_bot_while_paused_removes_it(
+    authorized_client: tuple[TestClient, _FakeBinanceClient],
+) -> None:
+    client, _fake = authorized_client
+    create_response = client.post("/bots", json=_create_body(), headers=_headers())
+    bot_id = create_response.json()["bot"]["id"]
+    assert create_response.json()["status"] == "PAUSED"
+
+    delete_response = client.delete(f"/bots/{bot_id}", headers=_headers("delete-key-1"))
+    assert delete_response.status_code == 200
+    assert delete_response.json() == {"bot": None, "status": "DELETED", "reason": None}
+
+    get_response = client.get(f"/bots/{bot_id}")
+    assert get_response.status_code == 404
+
+
+def test_delete_bot_while_stopped_removes_it(
+    authorized_client: tuple[TestClient, _FakeBinanceClient],
+) -> None:
+    client, _fake = authorized_client
+    create_response = client.post("/bots", json=_create_body(), headers=_headers())
+    bot_id = create_response.json()["bot"]["id"]
+
+    stop_response = client.post(f"/bots/{bot_id}/stop", headers=_headers("stop-key"))
+    assert stop_response.json()["status"] == "STOPPED"
+
+    delete_response = client.delete(f"/bots/{bot_id}", headers=_headers("delete-key-2"))
+    assert delete_response.status_code == 200
+    assert delete_response.json()["status"] == "DELETED"
+
+
+def test_delete_an_active_bot_is_rejected_not_deleted(
+    authorized_client: tuple[TestClient, _FakeBinanceClient],
+) -> None:
+    client, _fake = authorized_client
+    create_response = client.post("/bots", json=_create_body(), headers=_headers())
+    bot_id = create_response.json()["bot"]["id"]
+    client.post(f"/bots/{bot_id}/resume", headers=_headers("resume-key"))
+
+    delete_response = client.delete(f"/bots/{bot_id}", headers=_headers("delete-key-3"))
+    assert delete_response.status_code == 409
+
+    # Still there, untouched.
+    get_response = client.get(f"/bots/{bot_id}")
+    assert get_response.status_code == 200
+    assert get_response.json()["status"] == "ACTIVE"
+
+
+def test_delete_unknown_bot_is_404(
+    authorized_client: tuple[TestClient, _FakeBinanceClient],
+) -> None:
+    client, _fake = authorized_client
+    response = client.delete(
+        "/bots/00000000-0000-0000-0000-000000000000", headers=_headers("delete-key-4")
+    )
+    assert response.status_code == 404
+
+
+def test_delete_without_origin_header_is_403(
+    authorized_client: tuple[TestClient, _FakeBinanceClient],
+) -> None:
+    client, _fake = authorized_client
+    create_response = client.post("/bots", json=_create_body(), headers=_headers())
+    bot_id = create_response.json()["bot"]["id"]
+
+    response = client.delete(
+        f"/bots/{bot_id}", headers={"Idempotency-Key": "delete-key-5"}
+    )
+    assert response.status_code == 403
+
+
+def test_delete_without_idempotency_key_is_422(
+    authorized_client: tuple[TestClient, _FakeBinanceClient],
+) -> None:
+    client, _fake = authorized_client
+    create_response = client.post("/bots", json=_create_body(), headers=_headers())
+    bot_id = create_response.json()["bot"]["id"]
+
+    response = client.delete(f"/bots/{bot_id}", headers={"Origin": _ALLOWED_ORIGIN})
+    assert response.status_code == 422
+
+
+def test_duplicate_delete_request_is_idempotent(
+    authorized_client: tuple[TestClient, _FakeBinanceClient],
+) -> None:
+    client, _fake = authorized_client
+    create_response = client.post("/bots", json=_create_body(), headers=_headers())
+    bot_id = create_response.json()["bot"]["id"]
+
+    first = client.delete(f"/bots/{bot_id}", headers=_headers("delete-key-6"))
+    second = client.delete(f"/bots/{bot_id}", headers=_headers("delete-key-6"))
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert (
+        first.json()
+        == second.json()
+        == {
+            "bot": None,
+            "status": "DELETED",
+            "reason": None,
+        }
+    )

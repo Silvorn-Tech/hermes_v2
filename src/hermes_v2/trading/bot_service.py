@@ -93,6 +93,7 @@ from hermes_v2.trading.simulation_order_service import SimulationOrderService
 
 _CREATE_ENDPOINT = "POST /bots"
 _STOPPABLE_STATUSES = frozenset({BotStatus.ACTIVE, BotStatus.PAUSED, BotStatus.ERROR})
+_DELETABLE_STATUSES = frozenset({BotStatus.PAUSED, BotStatus.STOPPED})
 
 
 class BotServiceError(RuntimeError):
@@ -414,6 +415,81 @@ class BotService:
         response = {"bot": bot_to_response(bot), "status": "STOPPED", "reason": None}
         finalize(self._session, reservation.key_row_id, response)
         self._audit(user_id, "bot.stop", AuditResult.SUCCESS, "Bot stopped.", bot=bot)
+        return response
+
+    def delete_bot(
+        self, user_id: uuid.UUID, bot_id: uuid.UUID, idempotency_key: str
+    ) -> dict[str, Any]:
+        """Hard-deletes a bot — only from PAUSED or STOPPED, never while a
+        position could still be open or a transition is mid-flight
+        (ACTIVE/PAUSING/RESUMING), and ERROR requires an explicit Stop
+        first, same precondition style as every other terminal-state check
+        in this service.
+
+        `BotPosition` goes with it via the ORM's own `cascade="all,
+        delete-orphan"`; `SimulationAccount`/`SimulationOrder`/
+        `SimulationSnapshot` go with it via the database's `ON DELETE
+        CASCADE` (see `models/simulation.py`). A bot's historical *real*
+        orders never disappear just because the bot did — `orders.bot_id`
+        is `ON DELETE SET NULL` by design (see `Order.bot_id`'s own column
+        comment): the order row survives, simply no longer attributed to a
+        bot that no longer exists.
+        """
+        endpoint = f"DELETE /bots/{bot_id}"
+        reservation = reserve(
+            self._session, user_id, endpoint, idempotency_key, {"bot_id": str(bot_id)}
+        )
+        if not reservation.is_new:
+            return reservation.stored_response
+
+        bot = self._load_bot_for_update(user_id, bot_id)
+        if bot is None:
+            response = {"bot": None, "status": "REJECTED", "reason": "Bot not found."}
+            finalize(self._session, reservation.key_row_id, response)
+            self._audit(
+                user_id,
+                "bot.delete",
+                AuditResult.REJECTED,
+                "Bot not found",
+                bot_id=bot_id,
+            )
+            raise BotNotFoundError(f"No bot {bot_id} for this user.")
+
+        if bot.status not in _DELETABLE_STATUSES:
+            reason = (
+                f"Bot is {bot.status.value}; can only delete a PAUSED or STOPPED bot."
+            )
+            response = {
+                "bot": bot_to_response(bot),
+                "status": "REJECTED",
+                "reason": reason,
+            }
+            finalize(self._session, reservation.key_row_id, response)
+            self._audit(user_id, "bot.delete", AuditResult.REJECTED, reason, bot=bot)
+            raise InvalidBotTransitionError(reason)
+
+        # Captured before delete()/flush() -- accessing relationships on a
+        # deleted ORM instance afterward is unreliable, so the audit detail
+        # is built from plain local values instead of `bot` post-deletion.
+        bot_name = bot.name
+        self._session.delete(bot)
+        self._session.flush()
+
+        response = {"bot": None, "status": "DELETED", "reason": None}
+        finalize(self._session, reservation.key_row_id, response)
+        self._session.add(
+            AuditLogEntry(
+                user_id=user_id,
+                action="bot.delete",
+                symbol=None,
+                quantity=None,
+                result=AuditResult.SUCCESS,
+                hermes_order_id=None,
+                binance_order_id=None,
+                detail=f"bot_id={bot_id}: Deleted bot {bot_name!r}."[:1000],
+            )
+        )
+        self._session.flush()
         return response
 
     def _transition(
