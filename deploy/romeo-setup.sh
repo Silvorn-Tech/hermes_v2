@@ -108,6 +108,19 @@ fail() {
   exit 1
 }
 
+# Safety net for every command below that ISN'T already explicitly checked
+# (e.g. `docker compose pull`) -- without this, a failure like the
+# `.env` permission bug that motivated this trap (docker compose
+# couldn't read /opt/hermes-v2/.env) aborts the script via `set -e`
+# *without* ever calling fail()/notify(), so it fails completely
+# silently, tick after tick, with no push and nothing but a systemd
+# exit code to notice it by. `-E` above (errtrace) makes this trap
+# apply inside functions too. Safe from double-firing: `exit` inside
+# fail() is not itself a failing command, and every already-explicit
+# `fail "..."` call site is either a direct call or already exempted
+# from ERR by being on the "checked" side of `||`/`if`.
+trap 'fail "unexpected command failure (exit $?) at line ${LINENO}"' ERR
+
 image_id() {
   "$DOCKER_BIN" image inspect --format '{{.Id}}' "$IMAGE"
 }
