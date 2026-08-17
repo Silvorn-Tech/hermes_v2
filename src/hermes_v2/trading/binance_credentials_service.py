@@ -5,14 +5,22 @@ already constructed from whatever the user just submitted (the caller's
 job, same dependency-injection convention every other service in this
 package already follows — `BotService`/`OrderService`/`PortfolioService`
 all take a `client`, none construct their own) and calls
-`get_account_info()` against real Binance *before* anything is written —
-the same "does this key actually work" philosophy `cli.py`'s
-`binance_check()` already applies to the one operator-level key, now
-enforced automatically for every user's own key rather than left to an
-operator reading a diagnostic by hand. A key with withdrawals enabled is
-rejected outright (`CredentialsUnsafeError`) rather than accepted with a
-warning — `binance_check()` only ever flagged that case as `UNSAFE`
-advisory output; this is the same check with real consequences.
+`get_api_key_permissions()` against real Binance *before* anything is
+written — the same "does this key actually work, and is it read/trade
+only" philosophy `cli.py`'s `binance_check()` already applies to the one
+operator-level key, now enforced automatically for every user's own key
+rather than left to an operator reading a diagnostic by hand. A key with
+withdrawals enabled is rejected outright (`CredentialsUnsafeError`)
+rather than accepted with a warning — `binance_check()` only ever
+flagged that case as `UNSAFE` advisory output; this is the same check
+with real consequences.
+
+Uses `get_api_key_permissions()` (Binance's `/sapi/v1/account/apiRestrictions`),
+not `get_account_info()`'s `can_withdraw` — that field reflects the
+*account's* overall withdrawal eligibility (KYC/verification status),
+not the specific key's "Enable Withdrawals" checkbox, so it's `true` for
+any verified account regardless of which key is used and would reject
+every key unconditionally.
 
 Only `api_key_ciphertext`/`api_secret_ciphertext` (via
 `credentials_encryption.py`) are ever stored — plaintext exists only for
@@ -97,11 +105,11 @@ def connect_credentials(
     themselves need to be encrypted and stored, not because this function
     builds its own client."""
     try:
-        account = client.get_account_info()
+        permissions = client.get_api_key_permissions()
     except BinanceError as exc:
         raise CredentialsVerificationFailedError(str(exc)) from exc
 
-    if account.get("can_withdraw") is not False:
+    if permissions.get("can_withdraw") is not False:
         raise CredentialsUnsafeError(
             "This API key has withdrawals enabled. Create a key with "
             "withdrawals disabled and try again."

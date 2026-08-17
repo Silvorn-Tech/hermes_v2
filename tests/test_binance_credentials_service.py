@@ -34,18 +34,13 @@ class _FakeBinanceClient:
     ) -> None:
         self._can_withdraw = can_withdraw
         self._error = error
-        self.get_account_info_calls = 0
+        self.get_api_key_permissions_calls = 0
 
-    def get_account_info(self) -> dict:
-        self.get_account_info_calls += 1
+    def get_api_key_permissions(self) -> dict:
+        self.get_api_key_permissions_calls += 1
         if self._error is not None:
             raise self._error
-        return {
-            "account_type": "SPOT",
-            "can_trade": True,
-            "can_withdraw": self._can_withdraw,
-            "can_deposit": True,
-        }
+        return {"can_withdraw": self._can_withdraw}
 
 
 @pytest.fixture()
@@ -99,7 +94,7 @@ def test_connect_verifies_before_persisting(session: Session) -> None:
     )
     session.commit()
 
-    assert client.get_account_info_calls == 1
+    assert client.get_api_key_permissions_calls == 1
     assert status.configured is True
     assert status.api_key_last4 == "1234"
     assert status.verified_at is not None
