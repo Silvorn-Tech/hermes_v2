@@ -29,13 +29,13 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from hermes_v2.integrations.binance import BinanceClient, BinanceError
+from hermes_v2.trading.config import is_trading_enabled
 from hermes_v2.trading.exchange_info_cache import EXCHANGE_INFO_CACHE, ExchangeInfoCache
 from hermes_v2.trading.idempotency import (
     derive_binance_client_order_id,
     finalize,
     reserve,
 )
-from hermes_v2.trading.kill_switch import is_trading_permitted
 from hermes_v2.trading.models import (
     AuditLogEntry,
     AuditResult,
@@ -59,8 +59,8 @@ from hermes_v2.trading.risk_engine import (
     AccountRiskSnapshot,
     OrderRiskRequest,
     RiskEngine,
+    load_risk_limits,
 )
-from hermes_v2.trading.user_risk_settings_service import get_user_risk_limits
 
 _CREATE_ENDPOINT = "POST /orders"
 _CANCEL_ENDPOINT = "POST /orders/{id}/cancel"
@@ -189,7 +189,7 @@ class OrderService:
         endpoint: str,
         audit_action: str,
     ) -> dict[str, Any]:
-        if not is_trading_permitted(self._session, user_id):
+        if not is_trading_enabled():
             finalize(
                 self._session,
                 reservation_key_row_id,
@@ -203,7 +203,7 @@ class OrderService:
                 AuditResult.REJECTED,
                 None,
                 None,
-                "Trading is not permitted (global or per-user switch is off)",
+                "TRADING_ENABLED is false",
             )
             raise TradingDisabledError("Trading is disabled.")
 
@@ -356,7 +356,7 @@ class OrderService:
         escape unhandled, or the idempotency reservation around this whole
         flow would never get finalized (see idempotency.py's `finalize`
         docstring: an unfinalized row blocks every future retry forever)."""
-        risk_engine = RiskEngine(get_user_risk_limits(self._session, order.user_id))
+        risk_engine = RiskEngine(load_risk_limits())
         existing_position = self._positions_service.get_position(order.symbol)
         all_positions = self._positions_service.get_positions()
 
@@ -544,7 +544,7 @@ class OrderService:
         if not reservation.is_new:
             return reservation.stored_response
 
-        if not is_trading_permitted(self._session, user_id):
+        if not is_trading_enabled():
             finalize(
                 self._session,
                 reservation.key_row_id,
@@ -558,7 +558,7 @@ class OrderService:
                 AuditResult.REJECTED,
                 None,
                 None,
-                "Trading is not permitted (global or per-user switch is off)",
+                "TRADING_ENABLED is false",
             )
             raise TradingDisabledError("Trading is disabled.")
 

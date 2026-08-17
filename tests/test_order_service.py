@@ -15,7 +15,6 @@ from __future__ import annotations
 import os
 import time
 import uuid
-from dataclasses import replace
 from decimal import Decimal
 
 import pytest
@@ -46,8 +45,6 @@ from hermes_v2.trading.order_service import (
     PositionNotFoundError,
     TradingDisabledError,
 )
-from hermes_v2.trading.risk_engine import RiskLimits
-from hermes_v2.trading.user_risk_settings_service import save_user_risk_limits
 
 pytestmark = pytest.mark.database
 
@@ -160,26 +157,20 @@ def session() -> Session:
     engine.dispose()
 
 
-# OrderService reads per-user risk limits (never the global HERMES_RISK_*
-# env vars, which only SimulationOrderService still uses) -- every user
-# created via `_make_user` gets this permissive baseline so most tests
-# don't need to think about risk limits at all; tests that specifically
-# exercise a risk rejection override one field with `dataclasses.replace`.
-_PERMISSIVE_RISK_LIMITS = RiskLimits(
-    max_order_notional_quote=Decimal("10000"),
-    max_symbol_exposure_pct=Decimal("100"),
-    max_total_exposure_pct=Decimal("100"),
-    max_daily_loss_pct=Decimal("100"),
-    max_open_positions=10,
-    allowed_symbols=frozenset({"BTCUSDT", "ETHUSDT"}),
-)
+@pytest.fixture(autouse=True)
+def _configure_risk_limits(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("HERMES_RISK_MAX_ORDER_NOTIONAL_USD", "10000")
+    monkeypatch.setenv("HERMES_RISK_MAX_SYMBOL_EXPOSURE_PCT", "100")
+    monkeypatch.setenv("HERMES_RISK_MAX_TOTAL_EXPOSURE_PCT", "100")
+    monkeypatch.setenv("HERMES_RISK_MAX_DAILY_LOSS_PCT", "100")
+    monkeypatch.setenv("HERMES_RISK_MAX_OPEN_POSITIONS", "10")
+    monkeypatch.setenv("HERMES_RISK_ALLOWED_SYMBOLS", "BTCUSDT,ETHUSDT")
 
 
-def _make_user(session: Session, email: str = "trader@example.com") -> User:
-    user = User(email=email)
+def _make_user(session: Session) -> User:
+    user = User(email="trader@example.com")
     session.add(user)
     session.flush()
-    save_user_risk_limits(session, user.id, _PERMISSIVE_RISK_LIMITS)
     return user
 
 
@@ -357,12 +348,8 @@ def test_create_order_rejected_by_risk_engine_when_symbol_not_allowed(
     monkeypatch: pytest.MonkeyPatch, session: Session
 ) -> None:
     monkeypatch.setenv("TRADING_ENABLED", "true")
+    monkeypatch.setenv("HERMES_RISK_ALLOWED_SYMBOLS", "ETHUSDT")  # BTCUSDT not allowed
     user = _make_user(session)
-    save_user_risk_limits(  # BTCUSDT not allowed
-        session,
-        user.id,
-        replace(_PERMISSIVE_RISK_LIMITS, allowed_symbols=frozenset({"ETHUSDT"})),
-    )
     session.commit()
     client = _FakeBinanceClient()
     service = _make_service(session, client)
@@ -379,46 +366,12 @@ def test_create_order_rejected_by_risk_engine_when_symbol_not_allowed(
     assert order.status == OrderStatus.REJECTED
 
 
-def test_two_users_risk_limits_are_isolated_on_real_orders(
-    monkeypatch: pytest.MonkeyPatch, session: Session
-) -> None:
-    """A tight `max_order_notional_quote` for one user must never leak into
-    another user's own order -- each real order is evaluated against
-    exactly its own placer's per-user limits, resolved by `order.user_id`
-    inside `_evaluate_risk`."""
-    monkeypatch.setenv("TRADING_ENABLED", "true")
-    restricted_user = _make_user(session, email="restricted@example.com")
-    save_user_risk_limits(
-        session,
-        restricted_user.id,
-        replace(_PERMISSIVE_RISK_LIMITS, max_order_notional_quote=Decimal("1")),
-    )
-    permissive_user = _make_user(session, email="permissive@example.com")
-    session.commit()
-    client = _FakeBinanceClient()
-    service = _make_service(session, client)
-
-    restricted_result = service.create_order(
-        restricted_user.id, "BTCUSDT", "BUY", "MARKET", Decimal("0.01"), None, "key-1"
-    )
-    session.commit()
-    permissive_result = service.create_order(
-        permissive_user.id, "BTCUSDT", "BUY", "MARKET", Decimal("0.01"), None, "key-1"
-    )
-    session.commit()
-
-    assert restricted_result["status"] == "REJECTED"
-    assert permissive_result["status"] == "FILLED"
-
-
 def test_risk_rejection_when_a_limit_is_unconfigured(
     monkeypatch: pytest.MonkeyPatch, session: Session
 ) -> None:
     monkeypatch.setenv("TRADING_ENABLED", "true")
+    monkeypatch.delenv("HERMES_RISK_MAX_DAILY_LOSS_PCT", raising=False)
     user = _make_user(session)
-    save_user_risk_limits(
-        session, user.id, replace(_PERMISSIVE_RISK_LIMITS, max_daily_loss_pct=None)
-    )
     session.commit()
     service = _make_service(session, _FakeBinanceClient())
 
@@ -910,7 +863,6 @@ def test_cancel_someone_elses_order_raises_not_found(
     attacker = User(email="attacker@example.com")
     session.add_all([owner, attacker])
     session.flush()
-    save_user_risk_limits(session, owner.id, _PERMISSIVE_RISK_LIMITS)
     session.commit()
     client = _FakeBinanceClient()
     service = _make_service(session, client)
@@ -1099,12 +1051,8 @@ def test_close_position_is_blocked_for_a_disallowed_symbol(
     check as any other order — holding a symbol doesn't grant permission to
     trade it if it was removed from the allowlist since it was bought."""
     monkeypatch.setenv("TRADING_ENABLED", "true")
+    monkeypatch.setenv("HERMES_RISK_ALLOWED_SYMBOLS", "ETHUSDT")  # BTCUSDT not allowed
     user = _make_user(session)
-    save_user_risk_limits(  # BTCUSDT not allowed
-        session,
-        user.id,
-        replace(_PERMISSIVE_RISK_LIMITS, allowed_symbols=frozenset({"ETHUSDT"})),
-    )
     session.commit()
     client = _FakeBinanceClient()
     client.balances = [
@@ -1130,12 +1078,8 @@ def test_close_position_is_blocked_by_the_daily_loss_circuit_breaker(
     the day) — it must not carve out an exception for closing a position,
     even though that seems like it should always be safe to allow."""
     monkeypatch.setenv("TRADING_ENABLED", "true")
+    monkeypatch.setenv("HERMES_RISK_MAX_DAILY_LOSS_PCT", "5")
     user = _make_user(session)
-    save_user_risk_limits(
-        session,
-        user.id,
-        replace(_PERMISSIVE_RISK_LIMITS, max_daily_loss_pct=Decimal("5")),
-    )
     session.commit()
     client = _FakeBinanceClient()
     # ETH is *partially* sold at a loss today (still holds 0.1 ETH) —

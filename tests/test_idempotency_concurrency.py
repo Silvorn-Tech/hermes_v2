@@ -29,17 +29,6 @@ from hermes_v2.database.connection import create_engine_from_environment
 from hermes_v2.trading.exchange_info_cache import ExchangeInfoCache
 from hermes_v2.trading.models import Order
 from hermes_v2.trading.order_service import OrderService
-from hermes_v2.trading.risk_engine import RiskLimits
-from hermes_v2.trading.user_risk_settings_service import save_user_risk_limits
-
-_PERMISSIVE_RISK_LIMITS = RiskLimits(
-    max_order_notional_quote=Decimal("10000"),
-    max_symbol_exposure_pct=Decimal("100"),
-    max_total_exposure_pct=Decimal("100"),
-    max_daily_loss_pct=Decimal("100"),
-    max_open_positions=10,
-    allowed_symbols=frozenset({"BTCUSDT"}),
-)
 
 pytestmark = pytest.mark.database
 
@@ -143,10 +132,8 @@ def test_two_truly_concurrent_create_order_requests_produce_one_order(
     with session_factory() as setup_session:
         user = User(email="concurrent@example.com")
         setup_session.add(user)
-        setup_session.flush()
-        user_id = user.id
-        save_user_risk_limits(setup_session, user_id, _PERMISSIVE_RISK_LIMITS)
         setup_session.commit()
+        user_id = user.id
 
     entered_binance_call = threading.Event()
     release_binance_call = threading.Event()
@@ -227,10 +214,8 @@ def test_two_truly_concurrent_close_position_requests_produce_one_order(
     with session_factory() as setup_session:
         user = User(email="concurrent-close@example.com")
         setup_session.add(user)
-        setup_session.flush()
-        user_id = user.id
-        save_user_risk_limits(setup_session, user_id, _PERMISSIVE_RISK_LIMITS)
         setup_session.commit()
+        user_id = user.id
 
     entered_binance_call = threading.Event()
     release_binance_call = threading.Event()

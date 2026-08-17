@@ -130,7 +130,7 @@ def authorized_client(
     db_session.commit()
 
     fake_client = _FakeBinanceClient()
-    monkeypatch.setattr(bots_routes, "BinanceClient", lambda *a, **kw: fake_client)
+    monkeypatch.setattr(bots_routes, "BinanceClient", lambda: fake_client)
 
     client = TestClient(app)
     client.cookies.set("hermes_session", raw_token)
@@ -324,55 +324,6 @@ def test_full_pause_resume_stop_cycle(
     assert invalid_resume.status_code == 409
 
     assert fake.create_order_calls == []  # SIMULATION never reaches Binance
-
-
-def test_full_bot_lifecycle_never_requires_a_connected_binance_account(
-    authorized_client: tuple[TestClient, _FakeBinanceClient],
-    db_session: Session,
-) -> None:
-    """The core multi-tenancy requirement this phase exists to protect:
-    a user who has never connected a Binance account -- confirmed here by
-    asserting zero UserBinanceCredential rows exist for them -- can still
-    fully create/resume/pause/stop/delete a SIMULATION bot end-to-end."""
-    from hermes_v2.trading.models import UserBinanceCredential
-
-    client, _fake = authorized_client
-    user = db_session.scalars(select(User)).one()
-    assert (
-        db_session.scalar(
-            select(UserBinanceCredential).where(
-                UserBinanceCredential.user_id == user.id
-            )
-        )
-        is None
-    )
-
-    create_response = client.post("/bots", json=_create_body(), headers=_headers())
-    assert create_response.status_code == 201
-    bot_id = create_response.json()["bot"]["id"]
-
-    assert (
-        client.post(f"/bots/{bot_id}/resume", headers=_headers("resume-key")).json()[
-            "status"
-        ]
-        == "ACTIVE"
-    )
-    assert (
-        client.post(f"/bots/{bot_id}/pause", headers=_headers("pause-key")).json()[
-            "status"
-        ]
-        == "PAUSED"
-    )
-    assert (
-        client.post(f"/bots/{bot_id}/stop", headers=_headers("stop-key")).json()[
-            "status"
-        ]
-        == "STOPPED"
-    )
-
-    delete_response = client.delete(f"/bots/{bot_id}", headers=_headers("delete-key"))
-    assert delete_response.status_code == 200
-    assert client.get(f"/bots/{bot_id}").status_code == 404
 
 
 def test_resume_with_kill_switch_off_returns_200_rejected_not_500(

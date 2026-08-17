@@ -4,7 +4,6 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import Response
 
 from hermes_v2.api.bots_routes import router as bots_router
-from hermes_v2.api.settings_routes import router as settings_router
 from hermes_v2.api.trading_routes import router as trading_router
 from hermes_v2.auth.oauth import (
     get_authenticated_user,
@@ -82,7 +81,6 @@ app.add_middleware(
 # defined directly on `app` below. bots_router follows the same rule.
 app.router.routes.extend(trading_router.routes)
 app.router.routes.extend(bots_router.routes)
-app.router.routes.extend(settings_router.routes)
 
 
 @app.get("/health")

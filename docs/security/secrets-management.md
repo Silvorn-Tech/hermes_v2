@@ -94,8 +94,7 @@ Not everything the app reads from the environment is sensitive. Splitting
 |---|---|
 | `GOOGLE_CLIENT_SECRET` | OAuth code exchange, server-side only |
 | `POSTGRES_PASSWORD` (and the password embedded in `DATABASE_URL`) | Database authentication |
-| `BINANCE_API_KEY` / `BINANCE_API_SECRET` | The one operator-level Binance key `cli.py`'s `binance_check()` diagnostic reads — see §7 |
-| `HERMES_CREDENTIALS_ENCRYPTION_KEY` / `HERMES_CREDENTIALS_ENCRYPTION_KEY_PREVIOUS` | Encrypts every per-user Binance credential at rest — see §7 |
+| `BINANCE_API_KEY` / `BINANCE_API_SECRET` *(reserved, not yet consumed by any code)* | Future Binance trading auth — see §7 |
 
 **Config (not secret, but still belongs only in `.env`, not hardcoded):**
 
@@ -204,29 +203,10 @@ true, and what changed:
   §22 as the single most important prerequisite, and enforced by `hermes
   binance-check`'s permissions check.
 - Set `BINANCE_API_KEY`/`BINANCE_API_SECRET` directly in ROMEO's `.env`
-  following §4/§6 above — this remains the operator-level key
-  `cli.py`'s `binance_check()` diagnostic reads, decoupled from what the
-  trading routes read after the change below.
-- **Update (multi-tenant trading):** the "never in the database" decision
-  above was reversed once more than one real person needed to trade with
-  their own Binance account. A single shared operator key can't express
-  "many users, many distinct accounts," so each user now connects their
-  own key/secret from the Settings UI; each is verified against Binance
-  (`get_account_info()`, rejecting any key with withdrawals enabled)
-  *before* it is ever written, then stored as `Fernet`/`MultiFernet`
-  ciphertext (AES128-CBC + HMAC-SHA256, versioned/authenticated tokens)
-  in `user_binance_credentials`, keyed by a new `.env`-only
-  `HERMES_CREDENTIALS_ENCRYPTION_KEY` (generated once, never in git,
-  same `chmod 600` handling as every secret in this document; missing =
-  every credential read/write fails closed with a 503). `MultiFernet`
-  was chosen specifically for built-in rotation: generate a new key,
-  move the old value into a comma-separated
-  `HERMES_CREDENTIALS_ENCRYPTION_KEY_PREVIOUS` (decrypt-only), restart —
-  no bulk re-encryption pass required. Plaintext exists only for the
-  duration of the connect request and of a later decrypt-to-call-Binance
-  request; it is never logged and never returned in any response body
-  (only `api_key_last4` and timestamps are). See
-  `docs/architecture/multi-tenant-trading.md` for the full design.
+  following §4/§6 above.
+- Per-user trading credentials in Postgres were decided against: Hermes
+  stores exactly one operator-level Binance key, in `.env`, never in the
+  database — no encryption-at-rest column exists or is needed for that.
 - **Done:** structured audit logging exists (`audit_log` table, written by
   `OrderService` for every mutating trading action's outcome —
   success/rejected/failed, never a secret).
