@@ -1,9 +1,11 @@
-"""Tests for RiskEngine and its env-driven RiskLimits loader.
+"""Tests for RiskEngine.
 
-No threshold is invented anywhere in this file's assertions about
-`load_risk_limits()` — every expected value traces back to an env var this
-test itself set. The RiskEngine tests build `RiskLimits` directly, never via
-the environment, so they stay fast and don't leak state between tests.
+Builds `RiskLimits` directly rather than via any config source — no
+threshold is invented anywhere in these assertions; every expected
+value traces back to a `RiskLimits` this test itself constructed. Where
+a real caller's `RiskLimits` actually comes from (per-user, real orders
+vs. Simulation) is `user_risk_settings_service.py`'s concern, tested in
+`test_user_risk_settings_service.py`.
 """
 
 from __future__ import annotations
@@ -17,7 +19,6 @@ from hermes_v2.trading.risk_engine import (
     OrderRiskRequest,
     RiskEngine,
     RiskLimits,
-    load_risk_limits,
 )
 
 _FULLY_CONFIGURED_LIMITS = RiskLimits(
@@ -75,51 +76,6 @@ def _sell(symbol: str = "BTCUSDT", notional: str = "100") -> OrderRiskRequest:
         estimated_notional_quote=Decimal(notional),
         is_new_symbol_for_account=False,
     )
-
-
-# --- load_risk_limits() ------------------------------------------------------
-
-
-def test_load_risk_limits_defaults_to_unconfigured(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    for name in (
-        "HERMES_RISK_MAX_ORDER_NOTIONAL_USD",
-        "HERMES_RISK_MAX_SYMBOL_EXPOSURE_PCT",
-        "HERMES_RISK_MAX_TOTAL_EXPOSURE_PCT",
-        "HERMES_RISK_MAX_DAILY_LOSS_PCT",
-        "HERMES_RISK_MAX_OPEN_POSITIONS",
-        "HERMES_RISK_ALLOWED_SYMBOLS",
-    ):
-        monkeypatch.delenv(name, raising=False)
-
-    limits = load_risk_limits()
-
-    assert limits == _UNCONFIGURED_LIMITS
-
-
-def test_load_risk_limits_reads_every_configured_value(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv("HERMES_RISK_MAX_ORDER_NOTIONAL_USD", "1000")
-    monkeypatch.setenv("HERMES_RISK_MAX_SYMBOL_EXPOSURE_PCT", "25")
-    monkeypatch.setenv("HERMES_RISK_MAX_TOTAL_EXPOSURE_PCT", "50")
-    monkeypatch.setenv("HERMES_RISK_MAX_DAILY_LOSS_PCT", "5")
-    monkeypatch.setenv("HERMES_RISK_MAX_OPEN_POSITIONS", "3")
-    monkeypatch.setenv("HERMES_RISK_ALLOWED_SYMBOLS", "btcusdt, ethusdt")
-
-    limits = load_risk_limits()
-
-    assert limits == _FULLY_CONFIGURED_LIMITS
-
-
-def test_load_risk_limits_rejects_non_numeric_value(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv("HERMES_RISK_MAX_ORDER_NOTIONAL_USD", "not-a-number")
-
-    with pytest.raises(ValueError, match="HERMES_RISK_MAX_ORDER_NOTIONAL_USD"):
-        load_risk_limits()
 
 
 # --- non-finite values (NaN/Infinity) -----------------------------------------

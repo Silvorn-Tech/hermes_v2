@@ -22,8 +22,21 @@ from hermes_v2.auth.seed import seed_authorization_data
 from hermes_v2.auth.session import create_session
 from hermes_v2.database.connection import create_engine_from_environment
 from hermes_v2.trading.models import Bot, BotExecutionMode
+from hermes_v2.trading.risk_engine import RiskLimits
+from hermes_v2.trading.user_risk_settings_service import (
+    save_user_simulation_risk_limits,
+)
 
 pytestmark = pytest.mark.database
+
+_PERMISSIVE_SIMULATION_RISK_LIMITS = RiskLimits(
+    max_order_notional_quote=Decimal("10000"),
+    max_symbol_exposure_pct=Decimal("100"),
+    max_total_exposure_pct=Decimal("100"),
+    max_daily_loss_pct=Decimal("100"),
+    max_open_positions=10,
+    allowed_symbols=frozenset({"BTCUSDT", "ETHUSDT"}),
+)
 
 _ALLOWED_ORIGIN = "https://app.example.com"
 
@@ -96,12 +109,6 @@ def authorized_client(
 ) -> tuple[TestClient, _FakeBinanceClient]:
     monkeypatch.setenv("TRADING_ENABLED", "true")
     monkeypatch.setenv("HERMES_ALLOWED_ORIGINS", _ALLOWED_ORIGIN)
-    monkeypatch.setenv("HERMES_RISK_MAX_ORDER_NOTIONAL_USD", "10000")
-    monkeypatch.setenv("HERMES_RISK_MAX_SYMBOL_EXPOSURE_PCT", "100")
-    monkeypatch.setenv("HERMES_RISK_MAX_TOTAL_EXPOSURE_PCT", "100")
-    monkeypatch.setenv("HERMES_RISK_MAX_DAILY_LOSS_PCT", "100")
-    monkeypatch.setenv("HERMES_RISK_MAX_OPEN_POSITIONS", "10")
-    monkeypatch.setenv("HERMES_RISK_ALLOWED_SYMBOLS", "BTCUSDT,ETHUSDT")
 
     seed_authorization_data(db_session)
     user = User(email="trader@example.com")
@@ -109,6 +116,9 @@ def authorized_client(
     db_session.flush()
     super_admin = db_session.scalar(select(Role).where(Role.name == "SUPER_ADMIN"))
     user.roles.append(super_admin)
+    save_user_simulation_risk_limits(
+        db_session, user.id, _PERMISSIVE_SIMULATION_RISK_LIMITS
+    )
     _, raw_token = create_session(db_session, user, timedelta(hours=1))
     db_session.commit()
 
