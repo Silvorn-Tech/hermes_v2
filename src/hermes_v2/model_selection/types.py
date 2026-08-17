@@ -16,11 +16,17 @@ from dataclasses import dataclass
 class ModelCandidateResult:
     """One candidate model's fit and validation outcome.
 
-    `aic`/`rss` are computed on the TRAIN partition only; `rmse`/`mae`
-    on the VALIDATION partition only — never mixed (see
-    `docs/architecture/model-selection.md`). All four are `None` when
-    `valid` is `False`: an invalid candidate has no trustworthy metrics
-    to report, not a fabricated zero or a partial result.
+    `aic`/`aicc`/`rss` are computed on the TRAIN partition only;
+    `rmse`/`mae` on the VALIDATION partition only — never mixed (see
+    `docs/architecture/model-selection.md`). `aic`/`rss`/`rmse`/`mae` are
+    `None` when `valid` is `False`: an invalid candidate has no
+    trustworthy metrics to report, not a fabricated zero or a partial
+    result. `aicc` is independently `None`-able even for a *valid*
+    candidate: it needs `n > k + 1` (stricter than `aic()`'s own
+    `n > k`), so a candidate can be valid (has a real `aic`) while
+    `aicc` is unavailable — selection is always driven by `aic`, never
+    `aicc` (see `docs/architecture/model-selection.md`'s "AIC vs AICc"
+    section for when a human should prefer looking at `aicc` instead).
     """
 
     model_name: str
@@ -31,6 +37,7 @@ class ModelCandidateResult:
     rss: float | None
     rmse: float | None
     mae: float | None
+    aicc: float | None = None
 
 
 @dataclass(frozen=True)

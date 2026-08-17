@@ -11,7 +11,11 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from hermes_v2.model_selection.models import PolynomialRegressionModel
+from hermes_v2.model_selection.models import (
+    AutoregressiveModel,
+    PolynomialRegressionModel,
+    default_autoregressive_candidates,
+)
 from hermes_v2.model_selection.selector import ModelSelector
 
 
@@ -190,3 +194,139 @@ def test_custom_train_ratio_is_respected() -> None:
     result = ModelSelector(train_ratio=0.6).select(x, y)
     assert result.train_size == 60
     assert result.validation_size == 40
+
+
+def test_empty_candidates_list_is_rejected_at_construction() -> None:
+    with pytest.raises(ValueError, match="candidates must not be empty"):
+        ModelSelector(candidates=[])
+
+
+def test_none_candidates_still_uses_the_default_set() -> None:
+    # candidates=None (the default) is NOT the same as candidates=[] --
+    # None means "use the built-in set," [] means "nothing to compare,"
+    # which is almost certainly a caller mistake (see the test above).
+    result = ModelSelector(candidates=None).select(*_linear_dataset())
+    names = {c.model_name for c in result.candidates}
+    assert names == {
+        "linear_regression",
+        "polynomial_regression_2",
+        "polynomial_regression_3",
+    }
+
+
+def test_explicit_aic_tie_breaks_toward_the_earlier_listed_candidate() -> None:
+    # Two identically-configured candidates (different names) fit on the
+    # same data produce byte-identical AIC -- documents the tie-break
+    # rule in selector.py's _sort_key: whichever is listed first wins.
+    x, y = _linear_dataset()
+    first = PolynomialRegressionModel(degree=1, name="first")
+    second = PolynomialRegressionModel(degree=1, name="second")
+
+    result = ModelSelector(candidates=[first, second]).select(x, y)
+
+    by_name = {c.model_name: c for c in result.candidates}
+    assert by_name["first"].aic == by_name["second"].aic
+    assert result.selected_model is not None
+    assert result.selected_model.model_name == "first"
+
+    # Listing them in the opposite order flips the tie-break, proving
+    # it's genuinely list-order-driven, not name-alphabetical or
+    # otherwise hidden.
+    reversed_result = ModelSelector(candidates=[second, first]).select(x, y)
+    assert reversed_result.selected_model is not None
+    assert reversed_result.selected_model.model_name == "second"
+
+
+def test_aic_selection_and_validation_ranking_can_disagree_and_both_are_visible() -> (
+    None
+):
+    """Characterizes today's documented behavior (see the audit): the
+    engine does not reject or re-rank a candidate for having worse
+    validation error than a competitor -- it only ranks by AIC. This
+    test proves that disagreement is visible (both metrics are always
+    present) even though nothing here acts on it."""
+    x, y = _linear_dataset(n=60, noise_std=1.0, seed=0)
+    result = ModelSelector().select(x, y)
+
+    valid = [c for c in result.candidates if c.valid]
+    aic_order = [c.model_name for c in sorted(valid, key=lambda c: c.aic)]
+    rmse_order = [c.model_name for c in sorted(valid, key=lambda c: c.rmse)]
+
+    # Not asserting they disagree on every run (that depends on the
+    # noise draw) -- asserting that IF they disagree, the AIC-selected
+    # model is still exactly aic_order[0], and every candidate's own
+    # rmse remains visible in the result regardless of its AIC rank.
+    assert result.selected_model is not None
+    assert result.selected_model.model_name == aic_order[0]
+    assert all(c.rmse is not None for c in valid)
+    if aic_order[0] != rmse_order[0]:
+        # A genuine disagreement occurred in this run -- confirm it's
+        # not hidden: the AIC-best model's own rmse is still reported,
+        # even if it isn't the best validation performer.
+        aic_best = next(c for c in valid if c.model_name == aic_order[0])
+        assert aic_best.rmse is not None
+
+
+def test_valid_candidates_expose_aicc_alongside_aic() -> None:
+    x, y = _linear_dataset(n=60)
+    result = ModelSelector().select(x, y)
+    valid = [c for c in result.candidates if c.valid]
+    assert valid  # sanity: the dataset is large enough that something fits
+    for candidate in valid:
+        assert candidate.aicc is not None
+        assert candidate.aicc > candidate.aic  # correction term is always positive
+
+
+def test_aicc_is_none_when_n_is_too_small_relative_to_k_even_though_aic_is_valid() -> (
+    None
+):
+    # n_train=6 with degree=3 (k=4): aic() needs n>k (6>4, fine), but
+    # aic_corrected() needs n>k+1 (6>5, fine too) -- use exactly the
+    # boundary the other direction: n_train=5, k=4 -> aic ok (5>4),
+    # aicc's denominator (n-k-1=0) is not.
+    x = np.linspace(0, 10, 7)  # 80% split -> 5 train rows (floor(7*0.8)=5)
+    y = 3.0 + 2.0 * x + 0.1 * x**2 + 0.01 * x**3
+    result = ModelSelector(candidates=[PolynomialRegressionModel(degree=3)]).select(
+        x, y
+    )
+    candidate = result.candidates[0]
+    assert candidate.valid is True
+    assert candidate.aic is not None
+    assert candidate.aicc is None
+
+
+# --- AR(1)/AR(2) end-to-end -------------------------------------------------------
+
+
+def _ar1_returns(n: int = 80, phi: float = 0.3, seed: int = 3) -> np.ndarray:
+    rng = np.random.default_rng(seed)
+    series = np.zeros(n)
+    for t in range(1, n):
+        series[t] = 0.0005 + phi * series[t - 1] + rng.normal(0, 0.01)
+    return series
+
+
+def test_ar_candidates_selected_end_to_end_through_model_selector() -> None:
+    returns = _ar1_returns()
+    result = ModelSelector(candidates=default_autoregressive_candidates()).select(
+        returns, returns
+    )
+
+    assert result.selected_model is not None
+    assert result.selected_model.model_name in {"ar_1", "ar_2"}
+    names = {c.model_name for c in result.candidates}
+    assert names == {"ar_1", "ar_2"}
+
+
+def test_ar_candidate_via_model_selector_requires_x_equals_y() -> None:
+    returns = _ar1_returns()
+    unrelated_x = np.linspace(0, 1, len(returns))
+    result = ModelSelector(candidates=[AutoregressiveModel(order=1)]).select(
+        unrelated_x, returns
+    )
+
+    # Never crashes the whole run -- reported as an invalid candidate,
+    # same as any other fit failure.
+    assert result.selected_model is None
+    assert result.candidates[0].valid is False
+    assert "identical series" in (result.candidates[0].invalid_reason or "")

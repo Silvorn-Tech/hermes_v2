@@ -10,14 +10,24 @@ and never reads the trading kill-switch flag — enforced by
 `tests/test_model_selection_isolation.py`, not just this docstring.
 """
 
-from hermes_v2.model_selection.metrics import aic, mae, rmse, rss
+from hermes_v2.model_selection.metrics import (
+    aic,
+    aic_corrected,
+    aic_from_log_likelihood,
+    gaussian_ols_log_likelihood,
+    mae,
+    rmse,
+    rss,
+)
 from hermes_v2.model_selection.models import (
+    AutoregressiveModel,
     FittedModel,
     ModelFitError,
     PolynomialRegressionModel,
+    default_autoregressive_candidates,
     default_candidates,
 )
-from hermes_v2.model_selection.selector import ModelSelector
+from hermes_v2.model_selection.selector import CandidateModel, ModelSelector
 from hermes_v2.model_selection.split import (
     DEFAULT_TRAIN_RATIO,
     temporal_train_validation_split,
@@ -26,6 +36,8 @@ from hermes_v2.model_selection.types import ModelCandidateResult, ModelSelection
 
 __all__ = [
     "DEFAULT_TRAIN_RATIO",
+    "AutoregressiveModel",
+    "CandidateModel",
     "FittedModel",
     "ModelCandidateResult",
     "ModelFitError",
@@ -33,7 +45,11 @@ __all__ = [
     "ModelSelector",
     "PolynomialRegressionModel",
     "aic",
+    "aic_corrected",
+    "aic_from_log_likelihood",
+    "default_autoregressive_candidates",
     "default_candidates",
+    "gaussian_ols_log_likelihood",
     "mae",
     "rmse",
     "rss",
