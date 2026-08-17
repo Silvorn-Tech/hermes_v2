@@ -2,6 +2,15 @@
 "position" here is derived: a non-zero asset balance plus a weighted-average
 cost basis computed from that asset's trade history.
 
+Building one position costs two Binance calls (`get_trades` +
+`get_market_data`), and neither depends on any other asset's — measured
+against a real account with 14 non-zero Spot balances, doing them one
+asset at a time took ~23s. Both `get_positions()` and
+`get_realized_loss_today_quote()` fan the per-asset work out across a
+small thread pool instead (see `portfolio_service.py`'s own docstring for
+why sharing `BinanceClient`'s `requests.Session` across threads is safe
+here).
+
 **Position identity is the symbol itself** (e.g. `BTCUSDT`) — there is no
 other stable identifier in Spot. "Closing a position" means submitting a
 `MARKET SELL` for the full held quantity through `OrderService`, never a
@@ -23,6 +32,7 @@ snapshots or trade-history pagination, both out of scope for this pass.
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -31,6 +41,7 @@ from typing import Any
 from hermes_v2.integrations.binance import BinanceClient, BinanceError
 
 _DEFAULT_QUOTE_ASSET = "USDT"
+_MAX_POSITION_WORKERS = 10
 
 
 @dataclass(frozen=True)
@@ -104,7 +115,7 @@ class PositionsService:
 
     def get_positions(self) -> list[Position]:
         balances = self._client.get_balances()
-        positions = []
+        eligible: list[tuple[str, Decimal]] = []
         for balance in balances:
             asset = balance["asset"]
             if asset == self._quote_asset:
@@ -112,10 +123,15 @@ class PositionsService:
             quantity = Decimal(balance["free"]) + Decimal(balance["locked"])
             if quantity <= 0:
                 continue
-            position = self._build_position(asset, quantity)
-            if position is not None:
-                positions.append(position)
-        return positions
+            eligible.append((asset, quantity))
+
+        if not eligible:
+            return []
+        with ThreadPoolExecutor(
+            max_workers=min(len(eligible), _MAX_POSITION_WORKERS)
+        ) as executor:
+            results = executor.map(lambda item: self._build_position(*item), eligible)
+        return [position for position in results if position is not None]
 
     def get_position(self, symbol: str) -> Position | None:
         symbol = symbol.upper()
@@ -167,23 +183,34 @@ class PositionsService:
             unrealized_pnl_pct=unrealized_pnl_pct,
         )
 
+    def _trades_for_asset(self, asset: str) -> list[dict[str, Any]]:
+        symbol = f"{asset}{self._quote_asset}"
+        try:
+            return self._client.get_trades(symbol)
+        except BinanceError:
+            return []
+
     def get_realized_loss_today_quote(self) -> Decimal:
         """Sum of today's realized losses across currently-held positions'
         symbols (see the module docstring for the exact scope this covers).
         Always non-negative: a net gain today contributes zero, never a
         negative "loss.\""""
         today_start_ms = _today_start_ms(self._now)
-        total_realized = Decimal("0")
+        assets = [
+            balance["asset"]
+            for balance in self._client.get_balances()
+            if balance["asset"] != self._quote_asset
+        ]
+        if not assets:
+            return Decimal("0")
 
-        for balance in self._client.get_balances():
-            asset = balance["asset"]
-            if asset == self._quote_asset:
-                continue
-            symbol = f"{asset}{self._quote_asset}"
-            try:
-                trades = self._client.get_trades(symbol)
-            except BinanceError:
-                continue
+        with ThreadPoolExecutor(
+            max_workers=min(len(assets), _MAX_POSITION_WORKERS)
+        ) as executor:
+            trades_per_asset = executor.map(self._trades_for_asset, assets)
+
+        total_realized = Decimal("0")
+        for trades in trades_per_asset:
             for trade_time, _held_qty, _avg_cost, realized_delta in _cost_basis_walk(
                 trades
             ):
