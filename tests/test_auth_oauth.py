@@ -764,7 +764,7 @@ def test_cors_allows_configured_frontend_origin_with_credentials() -> None:
     assert response.headers.get("access-control-allow-credentials") == "true"
 
 
-@pytest.mark.parametrize("method", ["GET", "POST", "PATCH", "DELETE"])
+@pytest.mark.parametrize("method", ["GET", "POST", "PUT", "PATCH", "DELETE"])
 def test_cors_preflight_allows_every_method_the_api_actually_uses(
     method: str,
 ) -> None:
@@ -774,7 +774,8 @@ def test_cors_preflight_allows_every_method_the_api_actually_uses(
     entirely unreachable cross-origin. Regression guard for exactly this:
     `PATCH /bots/{id}` and `DELETE /bots/{id}` both silently broke this
     way in production (observed as a 400 on the preflight in ROMEO's
-    logs) because `allow_methods` only listed `GET`/`POST`.
+    logs) because `allow_methods` only listed `GET`/`POST`. `PUT` broke
+    the same way once `/settings/binance-credentials` started using it.
     """
     client = TestClient(app)
 
