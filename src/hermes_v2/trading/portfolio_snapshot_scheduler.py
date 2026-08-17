@@ -10,6 +10,13 @@ main process does.
 Runs regardless of `TRADING_ENABLED`: taking a snapshot is a read-only
 `GET /portfolio`-equivalent call, unrelated to the kill switch that
 guards order placement.
+
+Each tick does two independent things — the real account-wide snapshot
+(`run_snapshot_tick`, unchanged) and a per-bot Simulation snapshot pass
+(`run_simulation_snapshot_tick`, new) — in the *same* thread/interval
+rather than a second scheduler thread, but each wrapped in its own
+try/except so a failure in one never affects the other, and one bot's
+failure in the Simulation pass never stops the rest of that pass either.
 """
 
 from __future__ import annotations
@@ -18,11 +25,14 @@ import logging
 import threading
 from datetime import datetime
 
+from sqlalchemy import select
 from sqlalchemy.orm import sessionmaker
 
 from hermes_v2.database.connection import create_engine_from_environment
 from hermes_v2.integrations.binance import BinanceClient, BinanceConfigurationError
+from hermes_v2.trading.models import Bot, BotExecutionMode
 from hermes_v2.trading.portfolio_snapshot_service import take_portfolio_snapshot
+from hermes_v2.trading.simulation_snapshot_service import take_simulation_snapshot
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +73,51 @@ def run_snapshot_tick(
         return False
     logger.info("Portfolio snapshot recorded at %s.", snapshot.snapshot_at.isoformat())
     return True
+
+
+def run_simulation_snapshot_tick(
+    session_factory: sessionmaker,
+    *,
+    interval_minutes: int,
+    now: datetime | None = None,
+) -> int:
+    """Snapshots every SIMULATION bot's virtual portfolio in this tick.
+    Returns how many snapshot rows were created (for tests/logging).
+    Never raises: a Binance/DB failure for one bot is caught and logged
+    without stopping the rest of the pass, and a failure to run the pass
+    at all never escapes to the caller — the same "one bad tick must
+    never permanently stop the scheduler thread" contract as
+    `run_snapshot_tick`."""
+    try:
+        client = BinanceClient()
+    except BinanceConfigurationError:
+        logger.warning("Simulation snapshots skipped: Binance is not configured.")
+        return 0
+
+    taken = 0
+    try:
+        with session_factory() as session:
+            bots = session.scalars(
+                select(Bot).where(Bot.execution_mode == BotExecutionMode.SIMULATION)
+            ).all()
+            for bot in bots:
+                try:
+                    snapshot = take_simulation_snapshot(
+                        session, client, bot, interval_minutes=interval_minutes, now=now
+                    )
+                    session.commit()
+                    if snapshot is not None:
+                        taken += 1
+                except Exception:
+                    logger.exception(
+                        "Simulation snapshot failed for bot %s; will retry next interval.",
+                        bot.id,
+                    )
+                    session.rollback()
+    except Exception:
+        logger.exception("Simulation snapshot tick failed to run at all.")
+
+    return taken
 
 
 class PortfolioSnapshotScheduler:
@@ -109,7 +164,15 @@ class PortfolioSnapshotScheduler:
                 quote_asset=self._quote_asset,
                 interval_minutes=self._interval_minutes,
             )
+            run_simulation_snapshot_tick(
+                self._session_factory,
+                interval_minutes=self._interval_minutes,
+            )
             self._stop_event.wait(interval_seconds)
 
 
-__all__ = ["PortfolioSnapshotScheduler", "run_snapshot_tick"]
+__all__ = [
+    "PortfolioSnapshotScheduler",
+    "run_simulation_snapshot_tick",
+    "run_snapshot_tick",
+]
