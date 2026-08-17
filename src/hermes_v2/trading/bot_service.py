@@ -72,6 +72,7 @@ from hermes_v2.trading.models import (
     AuditLogEntry,
     AuditResult,
     Bot,
+    BotExecutionMode,
     BotPosition,
     BotStatus,
     ExecutionVenue,
@@ -79,10 +80,16 @@ from hermes_v2.trading.models import (
     OrderEvent,
     OrderEventType,
     RiskProfile,
+    SimulationAccount,
     is_terminal_status,
 )
 from hermes_v2.trading.order_service import OrderService, TradingDisabledError
 from hermes_v2.trading.reconciliation import reconcile_from_binance_payload
+from hermes_v2.trading.simulation_config import (
+    default_simulation_initial_capital,
+    default_simulation_quote_asset,
+)
+from hermes_v2.trading.simulation_order_service import SimulationOrderService
 
 _CREATE_ENDPOINT = "POST /bots"
 _STOPPABLE_STATUSES = frozenset({BotStatus.ACTIVE, BotStatus.PAUSED, BotStatus.ERROR})
@@ -137,6 +144,7 @@ def bot_to_response(bot: Bot) -> dict[str, Any]:
         "risk_profile": bot.risk_profile.value,
         "asset_class": bot.asset_class.value,
         "execution_venue": bot.execution_venue.value,
+        "execution_mode": bot.execution_mode.value,
         "instrument": bot.instrument,
         "strategy_model": bot.strategy_model,
         "strategy_config": bot.strategy_config,
@@ -224,12 +232,18 @@ class BotService:
         # current exposure; the user's first Resume click is what places
         # its first-ever order, going through the exact same validated
         # path as any later resume.
+        #
+        # execution_mode is deliberately not a parameter here — every bot
+        # is created SIMULATION in v1 (see BotExecutionMode's docstring
+        # and docs/architecture/simulation.md); there is no request field
+        # or code path that can set LIVE yet.
         bot = Bot(
             user_id=user_id,
             name=name,
             risk_profile=risk_profile_enum,
             asset_class=asset_class_enum,
             execution_venue=execution_venue_enum,
+            execution_mode=BotExecutionMode.SIMULATION,
             instrument=instrument,
             strategy_model=strategy_model,
             strategy_config=strategy_config,
@@ -245,13 +259,23 @@ class BotService:
             target_quantity=target_quantity,
         )
         self._session.add(position)
+
+        simulation_account = SimulationAccount(
+            bot_id=bot.id,
+            quote_asset=default_simulation_quote_asset(),
+            initial_capital_quote=default_simulation_initial_capital(),
+            cash_balance_quote=default_simulation_initial_capital(),
+        )
+        self._session.add(simulation_account)
         self._session.flush()
 
         self._audit(
             user_id,
             "bot.create",
             AuditResult.SUCCESS,
-            f"Created bot {name!r} ({instrument}).",
+            f"Created bot {name!r} ({instrument}), SIMULATION, "
+            f"initial capital {simulation_account.initial_capital_quote} "
+            f"{simulation_account.quote_asset}.",
             bot=bot,
         )
         response = {"bot": bot_to_response(bot), "status": "PAUSED", "reason": None}
@@ -438,23 +462,39 @@ class BotService:
             position.current_quantity if op == "pause" else position.target_quantity
         )
         inner_key = f"bot-{op}:{bot_id}:{idempotency_key}"
-        order_service = OrderService(
-            self._session,
-            self._client,
-            self._quote_asset,
-            exchange_info_cache=self._exchange_info_cache,
-        )
+        is_simulation = bot.execution_mode == BotExecutionMode.SIMULATION
 
         try:
-            result = order_service.create_order(
-                user_id=user_id,
-                symbol=position.instrument,
-                side=cfg.side,
-                order_type="MARKET",
-                quantity=quantity,
-                price=None,
-                idempotency_key=inner_key,
-            )
+            if is_simulation:
+                simulation_service = SimulationOrderService(
+                    self._session,
+                    self._client,
+                    self._quote_asset,
+                    exchange_info_cache=self._exchange_info_cache,
+                )
+                result = simulation_service.place_bot_order(
+                    user_id=user_id,
+                    bot=bot,
+                    side=cfg.side,
+                    quantity=quantity,
+                    idempotency_key=inner_key,
+                )
+            else:
+                order_service = OrderService(
+                    self._session,
+                    self._client,
+                    self._quote_asset,
+                    exchange_info_cache=self._exchange_info_cache,
+                )
+                result = order_service.create_order(
+                    user_id=user_id,
+                    symbol=position.instrument,
+                    side=cfg.side,
+                    order_type="MARKET",
+                    quantity=quantity,
+                    price=None,
+                    idempotency_key=inner_key,
+                )
         except TradingDisabledError:
             # Nothing was attempted -- revert to the prior stable status.
             bot.status = prior_status
@@ -474,7 +514,8 @@ class BotService:
             )
             return response
         except Exception as exc:
-            self._link_order(user_id, inner_key, bot)
+            if not is_simulation:
+                self._link_order(user_id, inner_key, bot)
             bot.status = BotStatus.ERROR
             self._session.flush()
             reason = "An unexpected error occurred; this bot requires manual review."
@@ -489,11 +530,23 @@ class BotService:
             )
             raise
 
-        order = self._link_order(user_id, inner_key, bot)
+        # Simulation orders resolve fully and synchronously -- there is no
+        # NEW/PARTIALLY_FILLED to reconcile, and their id lives in
+        # simulation_orders, not orders, so BotPosition's
+        # last_close_order_id/last_open_order_id (a real FK into orders)
+        # is left untouched for a simulation fill rather than pointed at
+        # an id that table doesn't contain.
+        order: Order | None = None
+        order_id_display: str | None = None
         outcome = result["status"]
-
-        if outcome in ("NEW", "PARTIALLY_FILLED") and order is not None:
-            outcome = self._reconcile_once(order)
+        if is_simulation:
+            simulated_order = result.get("order")
+            order_id_display = simulated_order["id"] if simulated_order else None
+        else:
+            order = self._link_order(user_id, inner_key, bot)
+            if outcome in ("NEW", "PARTIALLY_FILLED") and order is not None:
+                outcome = self._reconcile_once(order)
+            order_id_display = str(order.id) if order else None
 
         if outcome == "REJECTED":
             bot.status = prior_status
@@ -516,12 +569,14 @@ class BotService:
         if outcome == "FILLED":
             if op == "pause":
                 position.current_quantity = Decimal("0")
-                position.last_close_order_id = order.id if order else None
+                if not is_simulation:
+                    position.last_close_order_id = order.id if order else None
                 position.paused_at = datetime.now(UTC)
                 bot.status = BotStatus.PAUSED
             else:
                 position.current_quantity = position.target_quantity
-                position.last_open_order_id = order.id if order else None
+                if not is_simulation:
+                    position.last_open_order_id = order.id if order else None
                 position.paused_at = None
                 bot.status = BotStatus.ACTIVE
             self._session.flush()
@@ -531,9 +586,7 @@ class BotService:
                 "reason": None,
             }
             finalize(self._session, reservation.key_row_id, response)
-            detail = (
-                f"{op.capitalize()} confirmed via order {order.id if order else '?'}."
-            )
+            detail = f"{op.capitalize()} confirmed via order {order_id_display or '?'}."
             self._audit(user_id, cfg.audit_action, AuditResult.SUCCESS, detail, bot=bot)
             return response
 

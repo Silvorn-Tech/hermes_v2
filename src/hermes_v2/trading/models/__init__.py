@@ -4,6 +4,7 @@ from hermes_v2.trading.models.audit_log import AuditLogEntry, AuditResult
 from hermes_v2.trading.models.bot import (
     AssetClass,
     Bot,
+    BotExecutionMode,
     BotStatus,
     ExecutionVenue,
     RiskProfile,
@@ -20,12 +21,19 @@ from hermes_v2.trading.models.order import (
 )
 from hermes_v2.trading.models.order_event import OrderEvent, OrderEventType
 from hermes_v2.trading.models.portfolio_snapshot import PortfolioSnapshot
+from hermes_v2.trading.models.simulation import (
+    SimulationAccount,
+    SimulationOrder,
+    SimulationOrderStatus,
+    SimulationSnapshot,
+)
 
 __all__ = [
     "AssetClass",
     "AuditLogEntry",
     "AuditResult",
     "Bot",
+    "BotExecutionMode",
     "BotPosition",
     "BotStatus",
     "ExecutionVenue",
@@ -38,6 +46,10 @@ __all__ = [
     "OrderType",
     "PortfolioSnapshot",
     "RiskProfile",
+    "SimulationAccount",
+    "SimulationOrder",
+    "SimulationOrderStatus",
+    "SimulationSnapshot",
     "is_cancelable_status",
     "is_terminal_status",
 ]
