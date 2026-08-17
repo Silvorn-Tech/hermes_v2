@@ -54,7 +54,11 @@ def compute_realized_pnl_today(
     today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
 
     filled = sorted(
-        (o for o in orders if o.status == SimulationOrderStatus.FILLED and o.terminal_at),
+        (
+            o
+            for o in orders
+            if o.status == SimulationOrderStatus.FILLED and o.terminal_at
+        ),
         key=lambda o: o.terminal_at,
     )
 
@@ -64,14 +68,12 @@ def compute_realized_pnl_today(
         if order.side == OrderSide.BUY:
             open_buy = order
         elif order.side == OrderSide.SELL and open_buy is not None:
-            buy_cost = (
-                Decimal(open_buy.fill_price) * Decimal(open_buy.executed_quantity)
-                + Decimal(open_buy.fee_quote)
-            )
-            sell_proceeds = (
-                Decimal(order.fill_price) * Decimal(order.executed_quantity)
-                - Decimal(order.fee_quote)
-            )
+            buy_cost = Decimal(open_buy.fill_price) * Decimal(
+                open_buy.executed_quantity
+            ) + Decimal(open_buy.fee_quote)
+            sell_proceeds = Decimal(order.fill_price) * Decimal(
+                order.executed_quantity
+            ) - Decimal(order.fee_quote)
             pnl = sell_proceeds - buy_cost
             if order.terminal_at >= today_start:
                 realized_today += pnl
@@ -93,7 +95,11 @@ def compute_trade_stats(orders: Sequence[SimulationOrder]) -> TradeStats:
     `None` (never a fabricated 0%) when there are no closed round-trips
     yet to classify."""
     filled = sorted(
-        (o for o in orders if o.status == SimulationOrderStatus.FILLED and o.terminal_at),
+        (
+            o
+            for o in orders
+            if o.status == SimulationOrderStatus.FILLED and o.terminal_at
+        ),
         key=lambda o: o.terminal_at,
     )
 
@@ -104,14 +110,12 @@ def compute_trade_stats(orders: Sequence[SimulationOrder]) -> TradeStats:
         if order.side == OrderSide.BUY:
             open_buy = order
         elif order.side == OrderSide.SELL and open_buy is not None:
-            buy_cost = (
-                Decimal(open_buy.fill_price) * Decimal(open_buy.executed_quantity)
-                + Decimal(open_buy.fee_quote)
-            )
-            sell_proceeds = (
-                Decimal(order.fill_price) * Decimal(order.executed_quantity)
-                - Decimal(order.fee_quote)
-            )
+            buy_cost = Decimal(open_buy.fill_price) * Decimal(
+                open_buy.executed_quantity
+            ) + Decimal(open_buy.fee_quote)
+            sell_proceeds = Decimal(order.fill_price) * Decimal(
+                order.executed_quantity
+            ) - Decimal(order.fee_quote)
             round_trips += 1
             if sell_proceeds > buy_cost:
                 wins += 1

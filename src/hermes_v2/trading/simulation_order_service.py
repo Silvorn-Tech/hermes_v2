@@ -112,7 +112,11 @@ class SimulationOrderService:
         idempotency_key: str,
     ) -> dict[str, Any]:
         endpoint = _ENDPOINT_TEMPLATE.format(bot_id=bot.id)
-        request_payload = {"bot_id": str(bot.id), "side": side, "quantity": str(quantity)}
+        request_payload = {
+            "bot_id": str(bot.id),
+            "side": side,
+            "quantity": str(quantity),
+        }
         reservation = reserve(
             self._session, user_id, endpoint, idempotency_key, request_payload
         )
@@ -186,7 +190,11 @@ class SimulationOrderService:
 
         validation = self._validator.validate(
             OrderValidationRequest(
-                symbol=symbol, side=side, order_type="MARKET", quantity=quantity, price=None
+                symbol=symbol,
+                side=side,
+                order_type="MARKET",
+                quantity=quantity,
+                price=None,
             ),
             market_price,
             filters,
@@ -206,7 +214,9 @@ class SimulationOrderService:
         estimated_notional = validation.estimated_notional_quote or (
             market_price * quantity
         )
-        risk_decision = self._evaluate_risk(bot, account, side, market_price, estimated_notional)
+        risk_decision = self._evaluate_risk(
+            bot, account, side, market_price, estimated_notional
+        )
         if not risk_decision.approved:
             return self._terminal(
                 reservation,
@@ -255,7 +265,9 @@ class SimulationOrderService:
     ):
         risk_engine = RiskEngine(load_risk_limits())
         position = bot.position
-        current_quantity = Decimal(position.current_quantity) if position else Decimal("0")
+        current_quantity = (
+            Decimal(position.current_quantity) if position else Decimal("0")
+        )
         # BotPosition is one instrument per bot (see its own docstring),
         # so this bot's symbol exposure and total exposure are the same
         # single number -- there is nothing else this simulation account
@@ -409,7 +421,11 @@ class SimulationOrderService:
         simulation_order_id: uuid.UUID | None,
         detail: str | None,
     ) -> None:
-        full_detail = f"bot_id={bot.id} (SIMULATION): {detail}" if detail else f"bot_id={bot.id} (SIMULATION)"
+        full_detail = (
+            f"bot_id={bot.id} (SIMULATION): {detail}"
+            if detail
+            else f"bot_id={bot.id} (SIMULATION)"
+        )
         self._session.add(
             AuditLogEntry(
                 user_id=user_id,

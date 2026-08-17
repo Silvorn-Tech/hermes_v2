@@ -23,7 +23,13 @@ from hermes_v2.trading.bot_service import (
     InvalidBotTransitionError,
 )
 from hermes_v2.trading.exchange_info_cache import ExchangeInfoCache
-from hermes_v2.trading.models import AuditLogEntry, Bot, BotExecutionMode, BotPosition, Order
+from hermes_v2.trading.models import (
+    AuditLogEntry,
+    Bot,
+    BotExecutionMode,
+    BotPosition,
+    Order,
+)
 
 pytestmark = pytest.mark.database
 

@@ -50,9 +50,7 @@ def default_simulation_quote_asset() -> str:
 def simulation_fee_rate_pct() -> Decimal:
     """`HERMES_SIMULATION_FEE_RATE_PCT`, default `0`. Applied to a
     simulated fill's notional value; see `SimulationOrderService`."""
-    return _parse_decimal_env(
-        "HERMES_SIMULATION_FEE_RATE_PCT", _DEFAULT_FEE_RATE_PCT
-    )
+    return _parse_decimal_env("HERMES_SIMULATION_FEE_RATE_PCT", _DEFAULT_FEE_RATE_PCT)
 
 
 def simulation_slippage_rate_pct() -> Decimal:

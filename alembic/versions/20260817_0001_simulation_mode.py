@@ -90,7 +90,9 @@ def upgrade() -> None:
         "simulation_orders",
         sa.Column("id", postgresql.UUID(as_uuid=True), nullable=False),
         sa.Column("bot_id", postgresql.UUID(as_uuid=True), nullable=False),
-        sa.Column("simulation_account_id", postgresql.UUID(as_uuid=True), nullable=False),
+        sa.Column(
+            "simulation_account_id", postgresql.UUID(as_uuid=True), nullable=False
+        ),
         sa.Column("symbol", sa.String(length=20), nullable=False),
         sa.Column("side", simulation_order_side, nullable=False),
         sa.Column("order_type", simulation_order_type, nullable=False),
@@ -172,7 +174,10 @@ def upgrade() -> None:
         ),
     )
     op.create_index(
-        "ix_simulation_snapshots_bot_id", "simulation_snapshots", ["bot_id"], unique=False
+        "ix_simulation_snapshots_bot_id",
+        "simulation_snapshots",
+        ["bot_id"],
+        unique=False,
     )
     op.create_index(
         "ix_simulation_snapshots_snapshot_at",
@@ -189,9 +194,7 @@ def downgrade() -> None:
     op.drop_index("ix_simulation_snapshots_bot_id", table_name="simulation_snapshots")
     op.drop_table("simulation_snapshots")
 
-    op.drop_index(
-        "ix_simulation_orders_symbol", table_name="simulation_orders"
-    )
+    op.drop_index("ix_simulation_orders_symbol", table_name="simulation_orders")
     op.drop_index(
         "ix_simulation_orders_simulation_account_id", table_name="simulation_orders"
     )

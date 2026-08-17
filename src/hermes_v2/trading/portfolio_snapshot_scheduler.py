@@ -110,7 +110,8 @@ def run_simulation_snapshot_tick(
                         taken += 1
                 except Exception:
                     logger.exception(
-                        "Simulation snapshot failed for bot %s; will retry next interval.",
+                        "Simulation snapshot failed for bot %s; will retry next "
+                        "interval.",
                         bot.id,
                     )
                     session.rollback()
