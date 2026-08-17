@@ -19,6 +19,7 @@ from hermes_v2.trading.models.order import (
     is_terminal_status,
 )
 from hermes_v2.trading.models.order_event import OrderEvent, OrderEventType
+from hermes_v2.trading.models.portfolio_snapshot import PortfolioSnapshot
 
 __all__ = [
     "AssetClass",
@@ -35,6 +36,7 @@ __all__ = [
     "OrderSide",
     "OrderStatus",
     "OrderType",
+    "PortfolioSnapshot",
     "RiskProfile",
     "is_cancelable_status",
     "is_terminal_status",
