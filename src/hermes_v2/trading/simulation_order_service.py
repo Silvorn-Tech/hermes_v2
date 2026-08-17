@@ -29,9 +29,9 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from hermes_v2.integrations.binance import BinanceClient, BinanceError
-from hermes_v2.trading.config import is_trading_enabled
 from hermes_v2.trading.exchange_info_cache import EXCHANGE_INFO_CACHE, ExchangeInfoCache
 from hermes_v2.trading.idempotency import IdempotencyReservation, finalize, reserve
+from hermes_v2.trading.kill_switch import is_trading_permitted
 from hermes_v2.trading.models import (
     AuditLogEntry,
     AuditResult,
@@ -124,17 +124,23 @@ class SimulationOrderService:
             return reservation.stored_response
 
         # Studied deliberately (see docs/architecture/simulation.md's
-        # "Kill switch" section): TRADING_ENABLED=false blocks Simulation
-        # fills too. The switch means "Hermes is not placing trades right
-        # now" -- full stop -- not "not placing *real* trades right now."
-        if not is_trading_enabled():
+        # "Kill switch" section): the global switch being off blocks
+        # Simulation fills too -- it means "Hermes is not placing trades
+        # right now" -- full stop -- not "not placing *real* trades right
+        # now." The per-user switch gates Simulation for symmetry with
+        # that same policy, scoped to one user (see kill_switch.py).
+        if not is_trading_permitted(self._session, user_id):
             finalize(
                 self._session,
                 reservation.key_row_id,
                 {"order": None, "status": "REJECTED", "reason": "Trading is disabled."},
             )
             self._audit(
-                user_id, bot, AuditResult.REJECTED, None, "TRADING_ENABLED is false"
+                user_id,
+                bot,
+                AuditResult.REJECTED,
+                None,
+                "Trading is not permitted (global or per-user switch is off)",
             )
             raise TradingDisabledError("Trading is disabled.")
 

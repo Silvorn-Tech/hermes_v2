@@ -26,6 +26,17 @@ from hermes_v2.database.connection import create_engine_from_environment
 from hermes_v2.trading.bot_service import BotService, InvalidBotTransitionError
 from hermes_v2.trading.exchange_info_cache import ExchangeInfoCache
 from hermes_v2.trading.models import Bot, BotExecutionMode, Order
+from hermes_v2.trading.risk_engine import RiskLimits
+from hermes_v2.trading.user_risk_settings_service import save_user_risk_limits
+
+_PERMISSIVE_RISK_LIMITS = RiskLimits(
+    max_order_notional_quote=Decimal("10000"),
+    max_symbol_exposure_pct=Decimal("100"),
+    max_total_exposure_pct=Decimal("100"),
+    max_daily_loss_pct=Decimal("100"),
+    max_open_positions=10,
+    allowed_symbols=frozenset({"BTCUSDT"}),
+)
 
 pytestmark = pytest.mark.database
 
@@ -137,8 +148,13 @@ def test_two_differently_keyed_concurrent_pauses_produce_one_sell(
     with session_factory() as setup_session:
         user = User(email="bot-concurrent@example.com")
         setup_session.add(user)
-        setup_session.commit()
+        setup_session.flush()
         user_id = user.id
+        # This bot is flipped to LIVE below, so its Pause/Resume calls go
+        # through OrderService, which reads per-user risk limits rather
+        # than the HERMES_RISK_* env vars this file's other fixture sets.
+        save_user_risk_limits(setup_session, user_id, _PERMISSIVE_RISK_LIMITS)
+        setup_session.commit()
 
         setup_service = BotService(
             setup_session, client, exchange_info_cache=ExchangeInfoCache()

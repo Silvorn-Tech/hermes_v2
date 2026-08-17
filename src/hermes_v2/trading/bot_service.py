@@ -585,7 +585,7 @@ class BotService:
                 user_id,
                 cfg.audit_action,
                 AuditResult.REJECTED,
-                "TRADING_ENABLED is false",
+                "Trading is not permitted (global or per-user switch is off)",
                 bot=bot,
             )
             return response

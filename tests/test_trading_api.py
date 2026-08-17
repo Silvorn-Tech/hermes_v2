@@ -8,7 +8,9 @@ itself is faked, since that's the actual network boundary.
 from __future__ import annotations
 
 import os
+from dataclasses import replace
 from datetime import timedelta
+from decimal import Decimal
 
 import pytest
 from fastapi.testclient import TestClient
@@ -22,10 +24,25 @@ from hermes_v2.auth.seed import seed_authorization_data
 from hermes_v2.auth.session import create_session
 from hermes_v2.database.connection import create_engine_from_environment
 from hermes_v2.trading.models import AuditLogEntry, Order
+from hermes_v2.trading.risk_engine import RiskLimits
+from hermes_v2.trading.user_risk_settings_service import save_user_risk_limits
 
 pytestmark = pytest.mark.database
 
 _ALLOWED_ORIGIN = "https://app.example.com"
+
+# OrderService (the real path every one of these routes hits) reads
+# per-user risk limits, not the HERMES_RISK_* env vars -- this is the
+# permissive baseline `authorized_client` seeds for its user so most
+# tests don't need to think about risk limits at all.
+_PERMISSIVE_RISK_LIMITS = RiskLimits(
+    max_order_notional_quote=Decimal("10000"),
+    max_symbol_exposure_pct=Decimal("100"),
+    max_total_exposure_pct=Decimal("100"),
+    max_daily_loss_pct=Decimal("100"),
+    max_open_positions=10,
+    allowed_symbols=frozenset({"BTCUSDT", "ETHUSDT"}),
+)
 
 _GOOD_EXCHANGE_INFO = {
     "symbol": "BTCUSDT",
@@ -144,6 +161,7 @@ def authorized_client(
     db_session.flush()
     super_admin = db_session.scalar(select(Role).where(Role.name == "SUPER_ADMIN"))
     user.roles.append(super_admin)
+    save_user_risk_limits(db_session, user.id, _PERMISSIVE_RISK_LIMITS)
     _, raw_token = create_session(db_session, user, timedelta(hours=1))
     db_session.commit()
 
@@ -363,13 +381,19 @@ def test_kill_switch_disabled_returns_403(
 
 
 def test_risk_rejection_returns_201_with_rejected_status(
-    monkeypatch: pytest.MonkeyPatch,
+    db_session: Session,
     authorized_client: tuple[TestClient, _FakeBinanceClient],
 ) -> None:
     """A risk rejection still creates a (rejected) order resource — the
     request itself was valid, the business outcome was a rejection."""
-    monkeypatch.setenv("HERMES_RISK_ALLOWED_SYMBOLS", "ETHUSDT")
     client, fake = authorized_client
+    user = db_session.scalars(select(User)).one()
+    save_user_risk_limits(  # BTCUSDT not allowed
+        db_session,
+        user.id,
+        replace(_PERMISSIVE_RISK_LIMITS, allowed_symbols=frozenset({"ETHUSDT"})),
+    )
+    db_session.commit()
 
     response = client.post(
         "/orders",

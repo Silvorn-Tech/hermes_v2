@@ -30,6 +30,8 @@ from hermes_v2.trading.models import (
     BotPosition,
     Order,
 )
+from hermes_v2.trading.risk_engine import RiskLimits
+from hermes_v2.trading.user_risk_settings_service import save_user_risk_limits
 
 pytestmark = pytest.mark.database
 
@@ -131,10 +133,26 @@ def _configure_risk_limits(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("HERMES_RISK_ALLOWED_SYMBOLS", "BTCUSDT,ETHUSDT")
 
 
+# SimulationOrderService (every bot here, unless flipped LIVE by
+# `_make_live`) still reads the global HERMES_RISK_* env vars set by
+# `_configure_risk_limits` above; OrderService (a LIVE bot's real Pause/
+# Resume path) reads per-user limits instead -- seeding this permissive
+# baseline on every user covers both without each test needing to care.
+_PERMISSIVE_RISK_LIMITS = RiskLimits(
+    max_order_notional_quote=Decimal("10000"),
+    max_symbol_exposure_pct=Decimal("100"),
+    max_total_exposure_pct=Decimal("100"),
+    max_daily_loss_pct=Decimal("100"),
+    max_open_positions=10,
+    allowed_symbols=frozenset({"BTCUSDT", "ETHUSDT"}),
+)
+
+
 def _make_user(session: Session) -> User:
     user = User(email="trader@example.com")
     session.add(user)
     session.flush()
+    save_user_risk_limits(session, user.id, _PERMISSIVE_RISK_LIMITS)
     return user
 
 
