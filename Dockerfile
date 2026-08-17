@@ -1,5 +1,13 @@
 FROM python:3.12-slim
 
+# Patch the base image's own OS packages before installing anything else —
+# python:3.12-slim's Debian package snapshot lags behind Debian's security
+# updates, which is what Trivy's docker-security CI job (.github/workflows/
+# security.yml) flags as OS-level HIGH/CRITICAL CVEs even though none of our
+# own code or Python dependencies are involved. Re-run whenever that job
+# starts failing again with new CVEs in util-linux/bsdutils/login etc.
+RUN apt-get update && apt-get upgrade -y && rm -rf /var/lib/apt/lists/*
+
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
