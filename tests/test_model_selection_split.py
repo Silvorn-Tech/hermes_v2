@@ -66,3 +66,14 @@ def test_split_default_ratio_is_80_20() -> None:
     (x_train, _), (x_val, _) = temporal_train_validation_split(x, y)
     assert len(x_train) == 8
     assert len(x_val) == 2
+
+
+def test_split_rejects_mismatched_lengths_even_called_directly() -> None:
+    # This function validates its own preconditions rather than relying
+    # on ModelSelector to have already checked them -- called directly
+    # with x/y of different lengths, it must raise, not silently
+    # truncate/misalign the resulting train/validation pairs.
+    x = np.arange(10, dtype=float)
+    y = np.arange(7, dtype=float)
+    with pytest.raises(ValueError, match="same length"):
+        temporal_train_validation_split(x, y)
