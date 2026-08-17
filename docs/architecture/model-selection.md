@@ -221,11 +221,11 @@ ModelSelectionResult(
 from hermes_v2.model_selection import ModelSelector
 
 result = ModelSelector().select(x, y)
-result.selected_model.model_name   # "polynomial_regression_2"
-result.selected_model.aic          # 220.42...
-result.selected_model.rss          # 1167.10...  (train)
-result.selected_model.rmse         # 3.39...     (validation)
-result.selected_model.mae          # 2.91...     (validation)
+result.selected_model.model_name  # "polynomial_regression_2"
+result.selected_model.aic  # 220.42...
+result.selected_model.rss  # 1167.10...  (train)
+result.selected_model.rmse  # 3.39...     (validation)
+result.selected_model.mae  # 2.91...     (validation)
 result.selected_model.parameter_count  # 3
 ```
 
