@@ -18,6 +18,7 @@ dependencies = [
     "uvicorn[standard]>=0.30",
     "google-auth>=2.56,<3",
     "requests>=2.32",
+    "numpy>=1.26",
 ]
 
 [project.scripts]
