@@ -25,7 +25,7 @@ from hermes_v2.auth.models import User
 from hermes_v2.database.connection import create_engine_from_environment
 from hermes_v2.trading.bot_service import BotService, InvalidBotTransitionError
 from hermes_v2.trading.exchange_info_cache import ExchangeInfoCache
-from hermes_v2.trading.models import Order
+from hermes_v2.trading.models import Bot, BotExecutionMode, Order
 
 pytestmark = pytest.mark.database
 
@@ -155,6 +155,15 @@ def test_two_differently_keyed_concurrent_pauses_produce_one_sell(
         )
         setup_session.commit()
         bot_id = created["bot"]["id"]
+
+        # Every bot is created SIMULATION now — this test specifically
+        # targets OrderService's real-Binance-calling FOR UPDATE race (see
+        # module docstring), which SimulationOrderService's own client
+        # calls don't stall on; flip to LIVE so the stalling
+        # _SynchronizedFakeClient.create_order() is actually reached.
+        bot_row = setup_session.get(Bot, bot_id)
+        bot_row.execution_mode = BotExecutionMode.LIVE
+        setup_session.commit()
 
         activated = setup_service.resume(user_id, bot_id, "setup-activate")
         setup_session.commit()

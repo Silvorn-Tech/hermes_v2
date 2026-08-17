@@ -23,7 +23,7 @@ from hermes_v2.trading.bot_service import (
     InvalidBotTransitionError,
 )
 from hermes_v2.trading.exchange_info_cache import ExchangeInfoCache
-from hermes_v2.trading.models import AuditLogEntry, BotPosition, Order
+from hermes_v2.trading.models import AuditLogEntry, Bot, BotExecutionMode, BotPosition, Order
 
 pytestmark = pytest.mark.database
 
@@ -156,6 +156,20 @@ def _create_bot(
         target_quantity=target_quantity,
         idempotency_key=key,
     )
+
+
+def _make_live(session: Session, bot_id: str) -> None:
+    """Every bot is created SIMULATION now (see BotExecutionMode) --
+    this file specifically exercises OrderService's real-Binance-calling
+    Pause/Resume integration (mirroring test_order_service.py's shape,
+    per this file's own module docstring), which is still real, working
+    code kept ready for a future LIVE-activation phase even though
+    nothing in the current API can reach it. Flips a freshly created
+    test bot to LIVE directly, bypassing that (deliberately absent)
+    activation path, so these tests keep covering it."""
+    bot = session.get(Bot, bot_id)
+    bot.execution_mode = BotExecutionMode.LIVE
+    session.flush()
 
 
 # --- creation -------------------------------------------------------------------
@@ -347,6 +361,7 @@ def test_error_only_exits_via_stop(session: Session) -> None:
     client = _FakeBinanceClient()
     service = _make_service(session, client)
     bot = _create_bot(service, user.id)["bot"]
+    _make_live(session, bot["id"])
     _activate(service, session, user.id, bot["id"])
 
     # Force an ambiguous failure on pause: create_order's HTTP call fails,
@@ -393,6 +408,7 @@ def test_pause_closes_position_via_explicit_quantity_never_close_position(
     client = _FakeBinanceClient()
     service = _make_service(session, client)
     bot = _create_bot(service, user.id, target_quantity=Decimal("0.015"))["bot"]
+    _make_live(session, bot["id"])
     _activate(service, session, user.id, bot["id"])
     client.create_order_calls.clear()
 
@@ -460,6 +476,7 @@ def test_pause_failure_leaves_bot_in_a_safe_state_never_paused(
     client = _FakeBinanceClient()
     service = _make_service(session, client)
     bot = _create_bot(service, user.id)["bot"]
+    _make_live(session, bot["id"])
     _activate(service, session, user.id, bot["id"])
 
     client.create_order_result = BinanceRequestError("network blip")
@@ -478,6 +495,7 @@ def test_duplicate_pause_request_is_idempotent(session: Session) -> None:
     client = _FakeBinanceClient()
     service = _make_service(session, client)
     bot = _create_bot(service, user.id)["bot"]
+    _make_live(session, bot["id"])
     _activate(service, session, user.id, bot["id"])
     client.create_order_calls.clear()
 
@@ -499,6 +517,7 @@ def test_resume_restores_saved_target_quantity(session: Session) -> None:
     client = _FakeBinanceClient()
     service = _make_service(session, client)
     bot = _create_bot(service, user.id, target_quantity=Decimal("0.02"))["bot"]
+    _make_live(session, bot["id"])
 
     service.resume(user.id, bot["id"], "resume-1")
     session.commit()
@@ -519,6 +538,7 @@ def test_resume_uses_current_market_price_never_a_stored_historical_price(
     client = _FakeBinanceClient()
     service = _make_service(session, client)
     bot = _create_bot(service, user.id)["bot"]
+    _make_live(session, bot["id"])
 
     service.resume(user.id, bot["id"], "resume-1")
     session.commit()
@@ -554,6 +574,7 @@ def test_resume_insufficient_balance_is_rejected_not_a_crash(
     client.balances = [{"asset": "USDT", "free": "0", "locked": "0"}]
     service = _make_service(session, client)
     bot = _create_bot(service, user.id)["bot"]
+    _make_live(session, bot["id"])
 
     result = service.resume(user.id, bot["id"], "resume-1")
     session.commit()
@@ -568,6 +589,7 @@ def test_duplicate_resume_request_is_idempotent(session: Session) -> None:
     client = _FakeBinanceClient()
     service = _make_service(session, client)
     bot = _create_bot(service, user.id)["bot"]
+    _make_live(session, bot["id"])
 
     first = service.resume(user.id, bot["id"], "resume-dup")
     session.commit()
@@ -586,6 +608,7 @@ def test_resume_failure_leaves_bot_in_a_safe_state_never_active(
     client = _FakeBinanceClient()
     service = _make_service(session, client)
     bot = _create_bot(service, user.id)["bot"]
+    _make_live(session, bot["id"])
 
     client.create_order_result = BinanceRequestError("network blip")
     result = service.resume(user.id, bot["id"], "resume-fail")
@@ -606,6 +629,7 @@ def test_pause_links_the_closing_order_to_the_bot(session: Session) -> None:
     client = _FakeBinanceClient()
     service = _make_service(session, client)
     bot = _create_bot(service, user.id)["bot"]
+    _make_live(session, bot["id"])
     _activate(service, session, user.id, bot["id"])
 
     result = service.pause(user.id, bot["id"], "pause-1")

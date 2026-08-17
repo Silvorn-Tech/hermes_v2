@@ -289,8 +289,14 @@ def test_get_unknown_bot_is_404(
 def test_full_pause_resume_stop_cycle(
     authorized_client: tuple[TestClient, _FakeBinanceClient],
 ) -> None:
+    """Every bot POST /bots creates is SIMULATION (there is no API path to
+    LIVE yet — see BotExecutionMode) — this now exercises the full
+    Simulation lifecycle end-to-end through the real REST API, including
+    the isolation guarantee: not a single Binance write call happens
+    across a full resume/pause/stop cycle."""
     client, fake = authorized_client
     create_response = client.post("/bots", json=_create_body(), headers=_headers())
+    assert create_response.json()["bot"]["execution_mode"] == "SIMULATION"
     bot_id = create_response.json()["bot"]["id"]
 
     resume_response = client.post(
@@ -317,7 +323,7 @@ def test_full_pause_resume_stop_cycle(
     )
     assert invalid_resume.status_code == 409
 
-    assert len(fake.create_order_calls) == 2  # one BUY, one SELL — never more
+    assert fake.create_order_calls == []  # SIMULATION never reaches Binance
 
 
 def test_resume_with_kill_switch_off_returns_200_rejected_not_500(
