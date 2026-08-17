@@ -56,11 +56,18 @@ app.add_middleware(SecurityHeadersMiddleware)
 # configures its own exact origin(s) via HERMES_ALLOWED_ORIGINS — the same
 # allowlist hermes_v2.trading.origin_check's CSRF guard reads, via the
 # shared hermes_v2.config module so the two can never silently diverge.
+#
+# allow_methods must list every HTTP method any route actually uses — a
+# missing one doesn't 403, it fails the browser's OPTIONS preflight itself
+# with a 400 before the real request is ever sent, so the route looks
+# completely unreachable cross-origin (observed in production: PATCH
+# /bots/{id} and DELETE /bots/{id} both preflight-failed with GET/POST
+# only listed here).
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_configured_allowed_origins(),
     allow_credentials=True,
-    allow_methods=["GET", "POST"],
+    allow_methods=["GET", "POST", "PATCH", "DELETE"],
     allow_headers=["Content-Type", "Idempotency-Key"],
 )
 
