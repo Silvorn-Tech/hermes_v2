@@ -113,7 +113,7 @@ def authorized_client(
     db_session.commit()
 
     fake_client = _FakeBinanceClient()
-    monkeypatch.setattr(bots_routes, "BinanceClient", lambda: fake_client)
+    monkeypatch.setattr(bots_routes, "BinanceClient", lambda *a, **kw: fake_client)
 
     client = TestClient(app)
     client.cookies.set("hermes_session", raw_token)
@@ -308,7 +308,10 @@ def test_a_simulation_fill_never_appears_in_the_real_portfolio(
     ledger) must never cross: a $10,000 virtual BUY fill must not move
     the real account's reported balance by a single unit."""
     client, fake = authorized_client
-    monkeypatch.setattr(trading_routes, "BinanceClient", lambda: fake)
+    monkeypatch.setattr(trading_routes, "BinanceClient", lambda *a, **kw: fake)
+    monkeypatch.setattr(
+        trading_routes, "get_decrypted_client", lambda session, user_id: fake
+    )
 
     real_before = client.get("/portfolio")
     assert real_before.status_code == 200

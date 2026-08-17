@@ -1,6 +1,7 @@
 """Public API for Hermes trading models."""
 
 from hermes_v2.trading.models.audit_log import AuditLogEntry, AuditResult
+from hermes_v2.trading.models.binance_credential import UserBinanceCredential
 from hermes_v2.trading.models.bot import (
     AssetClass,
     Bot,
@@ -27,6 +28,7 @@ from hermes_v2.trading.models.simulation import (
     SimulationOrderStatus,
     SimulationSnapshot,
 )
+from hermes_v2.trading.models.user_trading_settings import UserTradingSettings
 
 __all__ = [
     "AssetClass",
@@ -50,6 +52,8 @@ __all__ = [
     "SimulationOrder",
     "SimulationOrderStatus",
     "SimulationSnapshot",
+    "UserBinanceCredential",
+    "UserTradingSettings",
     "is_cancelable_status",
     "is_terminal_status",
 ]

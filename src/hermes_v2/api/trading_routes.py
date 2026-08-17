@@ -39,10 +39,14 @@ from hermes_v2.database.connection import create_engine_from_environment
 from hermes_v2.integrations.binance import (
     BinanceAuthenticationError,
     BinanceClient,
-    BinanceConfigurationError,
     BinanceError,
     BinanceRateLimitError,
 )
+from hermes_v2.trading.binance_credentials_service import (
+    CredentialsNotConfiguredError,
+    get_decrypted_client,
+)
+from hermes_v2.trading.credentials_encryption import CredentialsEncryptionError
 from hermes_v2.trading.idempotency import (
     IdempotencyConflictError,
     IdempotencyInProgressError,
@@ -95,13 +99,41 @@ def _session_factory() -> sessionmaker[Session]:
     )
 
 
-def _new_binance_client() -> BinanceClient:
+def _new_binance_client_for_user(session: Session, user_id: uuid.UUID) -> BinanceClient:
+    """Required -- 409s with a structured "not connected" body (never a
+    500) if this user hasn't connected a Binance account yet; 503 if the
+    encryption key itself isn't configured on this server."""
     try:
-        return BinanceClient()
-    except BinanceConfigurationError as exc:
+        return get_decrypted_client(session, user_id)
+    except CredentialsNotConfiguredError as exc:
         raise HTTPException(
-            status_code=503, detail="Binance integration is not configured."
+            status_code=409,
+            detail={
+                "available": False,
+                "reason": "Connect your Binance account in Settings first.",
+            },
         ) from exc
+    except CredentialsEncryptionError as exc:
+        raise HTTPException(
+            status_code=503, detail="Binance credential encryption is not configured."
+        ) from exc
+
+
+def _new_optional_binance_client_for_user(
+    session: Session, user_id: uuid.UUID
+) -> BinanceClient | None:
+    """Best-effort -- for read paths that already degrade gracefully
+    without Binance (order reconciliation already swallows BinanceError)."""
+    try:
+        return get_decrypted_client(session, user_id)
+    except (CredentialsNotConfiguredError, CredentialsEncryptionError):
+        return None
+
+
+def _new_public_binance_client() -> BinanceClient:
+    """No credentials -- only for call sites that exclusively use
+    Binance's unsigned endpoints."""
+    return BinanceClient(api_key="", api_secret="")  # nosec B106 - deliberately empty
 
 
 def _current_user_id(current_user: dict[str, Any]) -> uuid.UUID:
@@ -147,6 +179,7 @@ def _http_exception_for_binance_error(exc: BinanceError) -> HTTPException:
 
 
 def _run_order_service_action(
+    user_id: uuid.UUID,
     action: Callable[[OrderService], dict[str, Any]],
 ) -> dict[str, Any]:
     """Shared transaction/error-handling wrapper for the three mutating
@@ -154,7 +187,7 @@ def _run_order_service_action(
     OrderService already wrote before raising are real and must survive."""
     session_factory = _session_factory()
     with session_factory() as session:
-        client = _new_binance_client()
+        client = _new_binance_client_for_user(session, user_id)
         service = OrderService(session, client)
         try:
             result = action(service)
@@ -233,13 +266,15 @@ def _serialize_position(position: Position) -> dict[str, Any]:
     }
 
 
-def _reconcile_on_read(order: Order, client: BinanceClient, session: Session) -> None:
+def _reconcile_on_read(
+    order: Order, client: BinanceClient | None, session: Session
+) -> None:
     """Refresh a non-terminal order from Binance before it's returned.
-    Best-effort: if Binance can't be reached right now, the last known
-    (possibly stale) state is returned rather than failing the whole read —
-    a read must never 5xx just because reconciliation couldn't run this
-    instant."""
-    if is_terminal_status(order.status):
+    Best-effort: if Binance can't be reached right now (or this user has
+    no connected account at all), the last known (possibly stale) state is
+    returned rather than failing the whole read — a read must never 5xx
+    just because reconciliation couldn't run this instant."""
+    if client is None or is_terminal_status(order.status):
         return
     try:
         binance_order = client.get_order(
@@ -275,7 +310,10 @@ def _reconcile_on_read(order: Order, client: BinanceClient, session: Session) ->
 async def get_portfolio(
     current_user: dict = Depends(require_permission("portfolio.read")),
 ) -> dict[str, Any]:
-    client = _new_binance_client()
+    user_id = _current_user_id(current_user)
+    session_factory = _session_factory()
+    with session_factory() as session:
+        client = _new_binance_client_for_user(session, user_id)
     try:
         portfolio = await run_in_threadpool(
             PortfolioService(client, quote_asset=_DEFAULT_QUOTE_ASSET).get_portfolio
@@ -306,7 +344,10 @@ async def get_portfolio(
 async def get_balances(
     current_user: dict = Depends(require_permission("portfolio.read")),
 ) -> dict[str, Any]:
-    client = _new_binance_client()
+    user_id = _current_user_id(current_user)
+    session_factory = _session_factory()
+    with session_factory() as session:
+        client = _new_binance_client_for_user(session, user_id)
     try:
         balances = await run_in_threadpool(
             PortfolioService(client, quote_asset=_DEFAULT_QUOTE_ASSET).get_balances
@@ -378,7 +419,7 @@ async def get_market_data_route(
     symbol: str = Query(..., min_length=1, max_length=20),
     current_user: dict = Depends(require_permission("portfolio.read")),
 ) -> dict[str, Any]:
-    client = _new_binance_client()
+    client = _new_public_binance_client()
     try:
         return await run_in_threadpool(client.get_market_data, symbol.upper())
     except BinanceError as exc:
@@ -389,7 +430,10 @@ async def get_market_data_route(
 async def get_positions(
     current_user: dict = Depends(require_permission("positions.read")),
 ) -> dict[str, Any]:
-    client = _new_binance_client()
+    user_id = _current_user_id(current_user)
+    session_factory = _session_factory()
+    with session_factory() as session:
+        client = _new_binance_client_for_user(session, user_id)
     try:
         positions = await run_in_threadpool(
             PositionsService(client, quote_asset=_DEFAULT_QUOTE_ASSET).get_positions
@@ -423,7 +467,7 @@ async def list_orders(
         query = query.order_by(Order.created_at.desc()).limit(limit)
         orders = session.scalars(query).all()
 
-        client = _new_binance_client()
+        client = _new_optional_binance_client_for_user(session, user_id)
         for order in orders:
             await run_in_threadpool(_reconcile_on_read, order, client, session)
 
@@ -445,7 +489,7 @@ async def get_order_route(
         if order is None or order.user_id != user_id:
             raise HTTPException(status_code=404, detail="Order not found.")
 
-        client = _new_binance_client()
+        client = _new_optional_binance_client_for_user(session, user_id)
         await run_in_threadpool(_reconcile_on_read, order, client, session)
         return order_to_response(order)
 
@@ -490,6 +534,7 @@ async def create_order_route(
 ) -> dict[str, Any]:
     user_id = _current_user_id(current_user)
     return _run_order_service_action(
+        user_id,
         lambda service: service.create_order(
             user_id=user_id,
             symbol=body.symbol,
@@ -498,7 +543,7 @@ async def create_order_route(
             quantity=body.quantity,
             price=body.price,
             idempotency_key=idempotency_key,
-        )
+        ),
     )
 
 
@@ -512,9 +557,10 @@ async def cancel_order_route(
 ) -> dict[str, Any]:
     user_id = _current_user_id(current_user)
     return _run_order_service_action(
+        user_id,
         lambda service: service.cancel_order(
             user_id=user_id, order_id=order_id, idempotency_key=idempotency_key
-        )
+        ),
     )
 
 
@@ -530,9 +576,10 @@ async def close_position_route(
 ) -> dict[str, Any]:
     user_id = _current_user_id(current_user)
     return _run_order_service_action(
+        user_id,
         lambda service: service.close_position(
             user_id=user_id, symbol=symbol, idempotency_key=idempotency_key
-        )
+        ),
     )
 
 
