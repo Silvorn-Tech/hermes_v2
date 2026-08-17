@@ -133,7 +133,7 @@ def _new_optional_binance_client_for_user(
 def _new_public_binance_client() -> BinanceClient:
     """No credentials -- only for call sites that exclusively use
     Binance's unsigned endpoints."""
-    return BinanceClient(api_key="", api_secret="")
+    return BinanceClient(api_key="", api_secret="")  # nosec B106 - deliberately empty
 
 
 def _current_user_id(current_user: dict[str, Any]) -> uuid.UUID:

@@ -92,7 +92,7 @@ def _new_public_binance_client() -> BinanceClient:
     needs to be a real, per-user-credentialed client. This is the
     concrete mechanism that makes "no bot lifecycle action requires a
     connected Binance account" true today."""
-    return BinanceClient(api_key="", api_secret="")
+    return BinanceClient(api_key="", api_secret="")  # nosec B106 - deliberately empty
 
 
 def _current_user_id(current_user: dict[str, Any]) -> uuid.UUID:

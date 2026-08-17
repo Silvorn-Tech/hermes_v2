@@ -28,6 +28,22 @@ BOT_RESUME_RATE_LIMITER = SlidingWindowRateLimiter(max_requests=20, window_secon
 BOT_STOP_RATE_LIMITER = SlidingWindowRateLimiter(max_requests=20, window_seconds=60)
 BOT_DELETE_RATE_LIMITER = SlidingWindowRateLimiter(max_requests=20, window_seconds=60)
 
+# Tighter than the others: this one hits real Binance to verify the
+# submitted key/secret before anything is persisted, unlike every other
+# settings write below (plain DB upserts).
+SETTINGS_CREDENTIALS_PUT_RATE_LIMITER = SlidingWindowRateLimiter(
+    max_requests=5, window_seconds=60
+)
+SETTINGS_CREDENTIALS_DELETE_RATE_LIMITER = SlidingWindowRateLimiter(
+    max_requests=20, window_seconds=60
+)
+SETTINGS_RISK_LIMITS_RATE_LIMITER = SlidingWindowRateLimiter(
+    max_requests=20, window_seconds=60
+)
+SETTINGS_TRADING_SWITCH_RATE_LIMITER = SlidingWindowRateLimiter(
+    max_requests=20, window_seconds=60
+)
+
 _ALL_TRADING_RATE_LIMITERS = (
     CREATE_ORDER_RATE_LIMITER,
     CANCEL_ORDER_RATE_LIMITER,
@@ -38,6 +54,10 @@ _ALL_TRADING_RATE_LIMITERS = (
     BOT_RESUME_RATE_LIMITER,
     BOT_STOP_RATE_LIMITER,
     BOT_DELETE_RATE_LIMITER,
+    SETTINGS_CREDENTIALS_PUT_RATE_LIMITER,
+    SETTINGS_CREDENTIALS_DELETE_RATE_LIMITER,
+    SETTINGS_RISK_LIMITS_RATE_LIMITER,
+    SETTINGS_TRADING_SWITCH_RATE_LIMITER,
 )
 
 
@@ -58,5 +78,9 @@ __all__ = [
     "CANCEL_ORDER_RATE_LIMITER",
     "CLOSE_POSITION_RATE_LIMITER",
     "CREATE_ORDER_RATE_LIMITER",
+    "SETTINGS_CREDENTIALS_DELETE_RATE_LIMITER",
+    "SETTINGS_CREDENTIALS_PUT_RATE_LIMITER",
+    "SETTINGS_RISK_LIMITS_RATE_LIMITER",
+    "SETTINGS_TRADING_SWITCH_RATE_LIMITER",
     "reset_trading_rate_limiters",
 ]
