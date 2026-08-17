@@ -56,6 +56,7 @@ from hermes_v2.trading.origin_check import require_trusted_origin
 from hermes_v2.trading.portfolio_snapshot_service import compute_max_drawdown_pct
 from hermes_v2.trading.rate_limiting import (
     BOT_CREATE_RATE_LIMITER,
+    BOT_DELETE_RATE_LIMITER,
     BOT_PAUSE_RATE_LIMITER,
     BOT_RESUME_RATE_LIMITER,
     BOT_STOP_RATE_LIMITER,
@@ -478,6 +479,22 @@ async def stop_bot_route(
     user_id = _current_user_id(current_user)
     return _run_bot_service_action(
         lambda service: service.stop(
+            user_id=user_id, bot_id=bot_id, idempotency_key=idempotency_key
+        )
+    )
+
+
+@router.delete("/bots/{bot_id}")
+async def delete_bot_route(
+    bot_id: uuid.UUID,
+    current_user: dict = Depends(require_permission("bots.delete")),
+    idempotency_key: str = Depends(_idempotency_key_header),
+    _origin_check: None = Depends(require_trusted_origin),
+    _rate_limit: None = Depends(rate_limit(BOT_DELETE_RATE_LIMITER, "bots.delete")),
+) -> dict[str, Any]:
+    user_id = _current_user_id(current_user)
+    return _run_bot_service_action(
+        lambda service: service.delete_bot(
             user_id=user_id, bot_id=bot_id, idempotency_key=idempotency_key
         )
     )

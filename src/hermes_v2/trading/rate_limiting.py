@@ -26,6 +26,7 @@ BOT_UPDATE_RATE_LIMITER = SlidingWindowRateLimiter(max_requests=30, window_secon
 BOT_PAUSE_RATE_LIMITER = SlidingWindowRateLimiter(max_requests=20, window_seconds=60)
 BOT_RESUME_RATE_LIMITER = SlidingWindowRateLimiter(max_requests=20, window_seconds=60)
 BOT_STOP_RATE_LIMITER = SlidingWindowRateLimiter(max_requests=20, window_seconds=60)
+BOT_DELETE_RATE_LIMITER = SlidingWindowRateLimiter(max_requests=20, window_seconds=60)
 
 _ALL_TRADING_RATE_LIMITERS = (
     CREATE_ORDER_RATE_LIMITER,
@@ -36,6 +37,7 @@ _ALL_TRADING_RATE_LIMITERS = (
     BOT_PAUSE_RATE_LIMITER,
     BOT_RESUME_RATE_LIMITER,
     BOT_STOP_RATE_LIMITER,
+    BOT_DELETE_RATE_LIMITER,
 )
 
 
@@ -48,6 +50,7 @@ def reset_trading_rate_limiters() -> None:
 
 __all__ = [
     "BOT_CREATE_RATE_LIMITER",
+    "BOT_DELETE_RATE_LIMITER",
     "BOT_PAUSE_RATE_LIMITER",
     "BOT_RESUME_RATE_LIMITER",
     "BOT_STOP_RATE_LIMITER",
