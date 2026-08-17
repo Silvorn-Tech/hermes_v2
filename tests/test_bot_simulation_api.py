@@ -15,6 +15,7 @@ from sqlalchemy import select, text
 from sqlalchemy.orm import Session, sessionmaker
 
 import hermes_v2.api.bots_routes as bots_routes
+import hermes_v2.api.trading_routes as trading_routes
 from hermes_v2.api.app import app
 from hermes_v2.auth.models import Role, User
 from hermes_v2.auth.seed import seed_authorization_data
@@ -293,3 +294,37 @@ def test_performance_route_is_not_available_for_live_bots(
     response = client.get(f"/bots/{bot_id}/performance")
     assert response.status_code == 409
     assert response.json()["detail"]["available"] is False
+
+
+# --- Simulation is never visible through the real account endpoints ----------
+
+
+def test_a_simulation_fill_never_appears_in_the_real_portfolio(
+    monkeypatch: pytest.MonkeyPatch,
+    authorized_client: tuple[TestClient, _FakeBinanceClient],
+) -> None:
+    """GET /portfolio (trading_routes.py, real-Binance-account-backed) and
+    GET /bots/{id}/portfolio (bots_routes.py, this bot's own virtual
+    ledger) must never cross: a $10,000 virtual BUY fill must not move
+    the real account's reported balance by a single unit."""
+    client, fake = authorized_client
+    monkeypatch.setattr(trading_routes, "BinanceClient", lambda: fake)
+
+    real_before = client.get("/portfolio")
+    assert real_before.status_code == 200
+    assert Decimal(real_before.json()["total_value_quote"]) == Decimal("0")
+
+    create_response = client.post("/bots", json=_create_body(), headers=_headers())
+    bot_id = create_response.json()["bot"]["id"]
+    resume_response = client.post(
+        f"/bots/{bot_id}/resume", headers=_headers("resume-key")
+    )
+    assert resume_response.json()["status"] == "ACTIVE"
+
+    sim_portfolio = client.get(f"/bots/{bot_id}/portfolio")
+    assert Decimal(sim_portfolio.json()["cash_balance_quote"]) < Decimal("10000")
+
+    real_after = client.get("/portfolio")
+    assert real_after.status_code == 200
+    assert Decimal(real_after.json()["total_value_quote"]) == Decimal("0")
+    assert real_after.json()["balances"] == []
