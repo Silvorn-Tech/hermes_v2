@@ -8,6 +8,15 @@ Routes are thin by design: resolve the caller, open one DB session +
 `PortfolioService` / `PositionsService`, map the result or exception to an
 HTTP response. No business logic lives here — see `hermes_v2.trading.*`
 for that.
+
+`BinanceClient` uses the synchronous `requests` library, and uvicorn runs
+a single worker/event loop (see `runtime.py`) — an `async def` route that
+calls it directly would block that one event loop thread for the whole
+Binance round-trip, serializing every other in-flight request behind it.
+Every read route that touches Binance (directly or via
+`PortfolioService`/`PositionsService`/order reconciliation) runs that call
+through `run_in_threadpool` so it executes on a worker thread instead,
+letting the event loop keep dispatching other requests while it waits.
 """
 
 from __future__ import annotations
@@ -22,6 +31,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
+from starlette.concurrency import run_in_threadpool
 
 from hermes_v2.auth.authorization import require_permission
 from hermes_v2.auth.rate_limiting import rate_limit
@@ -261,9 +271,9 @@ async def get_portfolio(
 ) -> dict[str, Any]:
     client = _new_binance_client()
     try:
-        portfolio = PortfolioService(
-            client, quote_asset=_DEFAULT_QUOTE_ASSET
-        ).get_portfolio()
+        portfolio = await run_in_threadpool(
+            PortfolioService(client, quote_asset=_DEFAULT_QUOTE_ASSET).get_portfolio
+        )
     except BinanceError as exc:
         raise _http_exception_for_binance_error(exc) from exc
 
@@ -292,9 +302,9 @@ async def get_balances(
 ) -> dict[str, Any]:
     client = _new_binance_client()
     try:
-        balances = PortfolioService(
-            client, quote_asset=_DEFAULT_QUOTE_ASSET
-        ).get_balances()
+        balances = await run_in_threadpool(
+            PortfolioService(client, quote_asset=_DEFAULT_QUOTE_ASSET).get_balances
+        )
     except BinanceError as exc:
         raise _http_exception_for_binance_error(exc) from exc
 
@@ -308,7 +318,7 @@ async def get_market_data_route(
 ) -> dict[str, Any]:
     client = _new_binance_client()
     try:
-        return client.get_market_data(symbol.upper())
+        return await run_in_threadpool(client.get_market_data, symbol.upper())
     except BinanceError as exc:
         raise _http_exception_for_binance_error(exc) from exc
 
@@ -319,9 +329,9 @@ async def get_positions(
 ) -> dict[str, Any]:
     client = _new_binance_client()
     try:
-        positions = PositionsService(
-            client, quote_asset=_DEFAULT_QUOTE_ASSET
-        ).get_positions()
+        positions = await run_in_threadpool(
+            PositionsService(client, quote_asset=_DEFAULT_QUOTE_ASSET).get_positions
+        )
     except BinanceError as exc:
         raise _http_exception_for_binance_error(exc) from exc
 
@@ -353,7 +363,7 @@ async def list_orders(
 
         client = _new_binance_client()
         for order in orders:
-            _reconcile_on_read(order, client, session)
+            await run_in_threadpool(_reconcile_on_read, order, client, session)
 
         return {
             "orders": [order_to_response(order) for order in orders],
@@ -374,7 +384,7 @@ async def get_order_route(
             raise HTTPException(status_code=404, detail="Order not found.")
 
         client = _new_binance_client()
-        _reconcile_on_read(order, client, session)
+        await run_in_threadpool(_reconcile_on_read, order, client, session)
         return order_to_response(order)
 
 
