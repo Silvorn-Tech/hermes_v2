@@ -95,11 +95,15 @@ def take_portfolio_snapshot(
             exposure_pct=exposure_pct,
         )
         .on_conflict_do_nothing(index_elements=["snapshot_at"])
+        .returning(PortfolioSnapshot.__table__.c.id)
     )
-    result = session.execute(stmt)
+    # `result.rowcount` is unreliable for `ON CONFLICT DO NOTHING` on
+    # psycopg3 (observed as -1 either way), so the "did this insert
+    # actually happen" check goes through RETURNING instead.
+    inserted_id = session.execute(stmt).scalar()
     session.flush()
 
-    if result.rowcount == 0:
+    if inserted_id is None:
         return None
     return session.scalar(
         select(PortfolioSnapshot).where(PortfolioSnapshot.snapshot_at == snapshot_at)
