@@ -63,12 +63,14 @@ app.add_middleware(SecurityHeadersMiddleware)
 # with a 400 before the real request is ever sent, so the route looks
 # completely unreachable cross-origin (observed in production: PATCH
 # /bots/{id} and DELETE /bots/{id} both preflight-failed with GET/POST
-# only listed here).
+# only listed here; PUT regressed the same way once the settings routes
+# started using it for /settings/binance-credentials, /settings/risk-limits,
+# and /settings/trading-switch).
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_configured_allowed_origins(),
     allow_credentials=True,
-    allow_methods=["GET", "POST", "PATCH", "DELETE"],
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
     allow_headers=["Content-Type", "Idempotency-Key"],
 )
 
