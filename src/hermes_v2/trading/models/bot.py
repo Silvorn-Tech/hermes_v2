@@ -56,6 +56,20 @@ class ExecutionVenue(str, enum.Enum):
     BINANCE = "BINANCE"
 
 
+class BotExecutionMode(str, enum.Enum):
+    """SIMULATION never reaches `BinanceClient.create_order`/`cancel_order`
+    — it fills against real market data into a separate virtual ledger
+    (`hermes_v2.trading.models.simulation`), never the real `orders`
+    table. LIVE is today's existing (and, until now, only) path through
+    `OrderService`. Every bot is created SIMULATION in v1 — there is no
+    request field or route that can set LIVE yet; see
+    `docs/architecture/simulation.md` for what a future activation phase
+    needs to add."""
+
+    SIMULATION = "SIMULATION"
+    LIVE = "LIVE"
+
+
 class BotStatus(str, enum.Enum):
     """`ACTIVE`/`PAUSED`/`STOPPED`/`ERROR` are the stable states.
     `PAUSING`/`RESUMING` are transient but persisted — a pause/resume in
@@ -98,6 +112,11 @@ class Bot(Base):
     execution_venue: Mapped[ExecutionVenue] = mapped_column(
         Enum(ExecutionVenue, name="bot_execution_venue"), nullable=False
     )
+    execution_mode: Mapped[BotExecutionMode] = mapped_column(
+        Enum(BotExecutionMode, name="bot_execution_mode"),
+        nullable=False,
+        default=BotExecutionMode.SIMULATION,
+    )
     instrument: Mapped[str] = mapped_column(String(20), nullable=False)
     strategy_model: Mapped[str | None] = mapped_column(String(50))
     strategy_config: Mapped[dict | None] = mapped_column(JSON)
@@ -120,4 +139,11 @@ class Bot(Base):
     )
 
 
-__all__ = ["AssetClass", "Bot", "BotStatus", "ExecutionVenue", "RiskProfile"]
+__all__ = [
+    "AssetClass",
+    "Bot",
+    "BotExecutionMode",
+    "BotStatus",
+    "ExecutionVenue",
+    "RiskProfile",
+]
