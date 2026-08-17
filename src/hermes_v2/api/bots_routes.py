@@ -31,7 +31,6 @@ from hermes_v2.database.connection import create_engine_from_environment
 from hermes_v2.integrations.binance import (
     BinanceAuthenticationError,
     BinanceClient,
-    BinanceConfigurationError,
     BinanceError,
     BinanceRateLimitError,
 )
@@ -86,13 +85,14 @@ def _session_factory() -> sessionmaker[Session]:
     )
 
 
-def _new_binance_client() -> BinanceClient:
-    try:
-        return BinanceClient()
-    except BinanceConfigurationError as exc:
-        raise HTTPException(
-            status_code=503, detail="Binance integration is not configured."
-        ) from exc
+def _new_public_binance_client() -> BinanceClient:
+    """No credentials -- every bot today is SIMULATION (see
+    BotExecutionMode), and BotService never actually calls a method on
+    `self._client` for list/get/pause/resume/stop/delete, so this never
+    needs to be a real, per-user-credentialed client. This is the
+    concrete mechanism that makes "no bot lifecycle action requires a
+    connected Binance account" true today."""
+    return BinanceClient(api_key="", api_secret="")
 
 
 def _current_user_id(current_user: dict[str, Any]) -> uuid.UUID:
@@ -163,10 +163,16 @@ def _run_bot_service_action(
     """Shared transaction/error-handling wrapper, mirroring
     trading_routes.py's `_run_order_service_action` exactly — a
     BotServiceError still commits, since the audit/idempotency rows
-    BotService already wrote before raising are real and must survive."""
+    BotService already wrote before raising are real and must survive.
+
+    TODO(LIVE bots): once bot creation can produce a LIVE bot, this must
+    branch on the bot's `execution_mode` and resolve a required, per-user
+    credentialed client (trading_routes._new_binance_client_for_user's
+    equivalent) for that case -- the public client below is only correct
+    because every bot today is SIMULATION."""
     session_factory = _session_factory()
     with session_factory() as session:
-        client = _new_binance_client()
+        client = _new_public_binance_client()
         service = BotService(session, client)
         try:
             result = action(service)
@@ -223,7 +229,7 @@ async def list_bots_route(
     user_id = _current_user_id(current_user)
     session_factory = _session_factory()
     with session_factory() as session:
-        client = _new_binance_client()
+        client = _new_public_binance_client()
         service = BotService(session, client)
         return {"bots": service.list_bots(user_id)}
 
@@ -236,7 +242,7 @@ async def get_bot_route(
     user_id = _current_user_id(current_user)
     session_factory = _session_factory()
     with session_factory() as session:
-        client = _new_binance_client()
+        client = _new_public_binance_client()
         service = BotService(session, client)
         try:
             return service.get_bot(user_id, bot_id)
@@ -280,7 +286,7 @@ async def get_bot_portfolio_route(
 
         market_price = Decimal("0")
         if current_quantity > 0:
-            client = _new_binance_client()
+            client = _new_public_binance_client()
             try:
                 market_data = client.get_market_data(bot.instrument)
             except BinanceError as exc:
@@ -334,7 +340,7 @@ async def get_bot_performance_route(
 
         market_price = Decimal("0")
         if current_quantity > 0:
-            client = _new_binance_client()
+            client = _new_public_binance_client()
             try:
                 market_data = client.get_market_data(bot.instrument)
             except BinanceError as exc:

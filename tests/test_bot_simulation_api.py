@@ -113,7 +113,7 @@ def authorized_client(
     db_session.commit()
 
     fake_client = _FakeBinanceClient()
-    monkeypatch.setattr(bots_routes, "BinanceClient", lambda: fake_client)
+    monkeypatch.setattr(bots_routes, "BinanceClient", lambda *a, **kw: fake_client)
 
     client = TestClient(app)
     client.cookies.set("hermes_session", raw_token)
