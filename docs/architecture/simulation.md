@@ -72,8 +72,10 @@ guarantees" below).
 
 `SimulationOrderService` mirrors `OrderService`'s pipeline *sequence*
 exactly, reusing three components **directly, unmodified**:
-`OrderValidator.validate()`, `RiskEngine.validate_order()` (same class,
-same `HERMES_RISK_*` env vars), and
+`OrderValidator.validate()`, `RiskEngine.validate_order()` (same class;
+its `RiskLimits` come from each user's own per-user Simulation settings,
+`get_user_simulation_risk_limits()` — see
+`docs/architecture/multi-tenant-trading.md` #2), and
 `hermes_v2.trading.idempotency.reserve()/finalize()`. Nothing about how
 an order is validated, risk-checked, or deduplicated is reimplemented.
 The only things that genuinely differ — because they're what Simulation
@@ -178,17 +180,18 @@ builds the snapshot from the bot's own `SimulationAccount` + `BotPosition`
 - `open_position_count` = 1 if `current_quantity > 0` else 0
 - `realized_loss_today_quote` = `max(0, -compute_realized_pnl_today(...))`
 
-The `HERMES_RISK_*` limits themselves are **not duplicated** — same env
-vars, same `RiskEngine` class, just evaluated against a different
-account's numbers. A Simulation bot reproduces the same *decision
-behavior* a LIVE bot would face under identical limits.
+`RiskEngine` itself is **not duplicated** — same class, same
+`validate_order()` logic, just evaluated against a Simulation account's
+numbers with that user's own per-user Simulation limits
+(`get_user_simulation_risk_limits()`) rather than their real-order ones.
+A Simulation bot reproduces the same *decision behavior* a LIVE bot
+would face under equivalent limits.
 
 ## Fees and slippage
 
 No fee or slippage modeling exists anywhere else in Hermes today (`Order`
 has no fee column; `OrderValidator` doesn't model fees). Two new,
-explicit, documented env vars, read at call time the same way
-`RiskLimits` reads `HERMES_RISK_*` — never cached:
+explicit, documented env vars, read at call time and never cached:
 
 | Variable | Default | Effect |
 |---|---|---|

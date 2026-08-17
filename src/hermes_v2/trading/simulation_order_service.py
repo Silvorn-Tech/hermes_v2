@@ -52,12 +52,12 @@ from hermes_v2.trading.risk_engine import (
     AccountRiskSnapshot,
     OrderRiskRequest,
     RiskEngine,
-    load_risk_limits,
 )
 from hermes_v2.trading.simulation_config import (
     simulation_fee_rate_pct,
     simulation_slippage_rate_pct,
 )
+from hermes_v2.trading.user_risk_settings_service import get_user_simulation_risk_limits
 from hermes_v2.trading.simulation_portfolio_service import (
     compute_realized_pnl_today,
     compute_total_value,
@@ -221,7 +221,7 @@ class SimulationOrderService:
             market_price * quantity
         )
         risk_decision = self._evaluate_risk(
-            bot, account, side, market_price, estimated_notional
+            user_id, bot, account, side, market_price, estimated_notional
         )
         if not risk_decision.approved:
             return self._terminal(
@@ -263,13 +263,16 @@ class SimulationOrderService:
 
     def _evaluate_risk(
         self,
+        user_id: uuid.UUID,
         bot: Bot,
         account: SimulationAccount,
         side: str,
         market_price: Decimal,
         estimated_notional: Decimal,
     ):
-        risk_engine = RiskEngine(load_risk_limits())
+        risk_engine = RiskEngine(
+            get_user_simulation_risk_limits(self._session, user_id)
+        )
         position = bot.position
         current_quantity = (
             Decimal(position.current_quantity) if position else Decimal("0")

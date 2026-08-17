@@ -14,6 +14,18 @@ it gates a self-service convenience pause, not the platform's only line
 of defense against real money moving. See
 `docs/architecture/multi-tenant-trading.md` for the full two-tier
 kill-switch policy (`kill_switch.is_trading_permitted`).
+
+The `simulation_*` columns are a separate, `NOT NULL` twin of the six
+real-order limits above, each with a `server_default` (see the
+`20260818_0001` migration) — unlike the real-order columns, these are
+never "not configured": every row always holds a concrete value, so a
+brand-new user's Simulation bots work immediately with sensible
+defaults, and Settings just lets them override the numbers, never
+un-set them. This is deliberately a *different* fail-open-with-defaults
+posture than the real-order columns' fail-closed-on-`NULL` one — see
+`user_risk_settings_service.py` for why that's safe (virtual money) and
+`docs/architecture/multi-tenant-trading.md` for why Simulation used to
+read a global, operator-only env var instead.
 """
 
 from __future__ import annotations
@@ -69,6 +81,26 @@ class UserTradingSettings(Base):
     max_open_positions: Mapped[int | None] = mapped_column(Integer)
     allowed_symbols: Mapped[list[str] | None] = mapped_column(
         ARRAY(String(20)).with_variant(JSON(), "sqlite")
+    )
+    simulation_max_order_notional_quote: Mapped[str] = mapped_column(
+        Numeric(precision=28, scale=10), nullable=False, server_default="1000"
+    )
+    simulation_max_symbol_exposure_pct: Mapped[str] = mapped_column(
+        Numeric(precision=6, scale=3), nullable=False, server_default="50"
+    )
+    simulation_max_total_exposure_pct: Mapped[str] = mapped_column(
+        Numeric(precision=6, scale=3), nullable=False, server_default="100"
+    )
+    simulation_max_daily_loss_pct: Mapped[str] = mapped_column(
+        Numeric(precision=6, scale=3), nullable=False, server_default="20"
+    )
+    simulation_max_open_positions: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default="5"
+    )
+    simulation_allowed_symbols: Mapped[list[str]] = mapped_column(
+        ARRAY(String(20)).with_variant(JSON(), "sqlite"),
+        nullable=False,
+        server_default="{BTCUSDT,ETHUSDT}",
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()

@@ -8,6 +8,7 @@ these tests exercise.
 from __future__ import annotations
 
 import os
+from dataclasses import replace
 from decimal import Decimal
 
 import pytest
@@ -31,7 +32,10 @@ from hermes_v2.trading.models import (
     Order,
 )
 from hermes_v2.trading.risk_engine import RiskLimits
-from hermes_v2.trading.user_risk_settings_service import save_user_risk_limits
+from hermes_v2.trading.user_risk_settings_service import (
+    save_user_risk_limits,
+    save_user_simulation_risk_limits,
+)
 
 pytestmark = pytest.mark.database
 
@@ -125,19 +129,15 @@ def session() -> Session:
 @pytest.fixture(autouse=True)
 def _configure_risk_limits(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("TRADING_ENABLED", "true")
-    monkeypatch.setenv("HERMES_RISK_MAX_ORDER_NOTIONAL_USD", "10000")
-    monkeypatch.setenv("HERMES_RISK_MAX_SYMBOL_EXPOSURE_PCT", "100")
-    monkeypatch.setenv("HERMES_RISK_MAX_TOTAL_EXPOSURE_PCT", "100")
-    monkeypatch.setenv("HERMES_RISK_MAX_DAILY_LOSS_PCT", "100")
-    monkeypatch.setenv("HERMES_RISK_MAX_OPEN_POSITIONS", "10")
-    monkeypatch.setenv("HERMES_RISK_ALLOWED_SYMBOLS", "BTCUSDT,ETHUSDT")
 
 
 # SimulationOrderService (every bot here, unless flipped LIVE by
-# `_make_live`) still reads the global HERMES_RISK_* env vars set by
-# `_configure_risk_limits` above; OrderService (a LIVE bot's real Pause/
-# Resume path) reads per-user limits instead -- seeding this permissive
-# baseline on every user covers both without each test needing to care.
+# `_make_live`) reads per-user *Simulation* limits
+# (`get_user_simulation_risk_limits`); OrderService (a LIVE bot's real
+# Pause/Resume path) reads per-user *real-order* limits instead
+# (`get_user_risk_limits`) -- seeding this same permissive baseline into
+# both per-user rows on every test user covers both paths without each
+# test needing to care which one it's exercising.
 _PERMISSIVE_RISK_LIMITS = RiskLimits(
     max_order_notional_quote=Decimal("10000"),
     max_symbol_exposure_pct=Decimal("100"),
@@ -153,6 +153,7 @@ def _make_user(session: Session) -> User:
     session.add(user)
     session.flush()
     save_user_risk_limits(session, user.id, _PERMISSIVE_RISK_LIMITS)
+    save_user_simulation_risk_limits(session, user.id, _PERMISSIVE_RISK_LIMITS)
     return user
 
 
@@ -470,9 +471,7 @@ def test_pause_kill_switch_off_stays_active_not_error(
     assert client.create_order_calls == []
 
 
-def test_pause_blocked_by_risk_engine_stays_active(
-    monkeypatch: pytest.MonkeyPatch, session: Session
-) -> None:
+def test_pause_blocked_by_risk_engine_stays_active(session: Session) -> None:
     user = _make_user(session)
     session.commit()
     client = _FakeBinanceClient()
@@ -481,7 +480,12 @@ def test_pause_blocked_by_risk_engine_stays_active(
     _activate(service, session, user.id, bot["id"])
 
     # Symbol no longer allowed -- RiskEngine rejects before Binance is touched.
-    monkeypatch.setenv("HERMES_RISK_ALLOWED_SYMBOLS", "ETHUSDT")
+    save_user_simulation_risk_limits(
+        session,
+        user.id,
+        replace(_PERMISSIVE_RISK_LIMITS, allowed_symbols=frozenset({"ETHUSDT"})),
+    )
+    session.commit()
     client.create_order_calls.clear()
 
     result = service.pause(user.id, bot["id"], "pause-risk")
@@ -572,16 +576,17 @@ def test_resume_uses_current_market_price_never_a_stored_historical_price(
     assert call["order_type"] == "MARKET"
 
 
-def test_resume_goes_through_risk_validation(
-    monkeypatch: pytest.MonkeyPatch, session: Session
-) -> None:
+def test_resume_goes_through_risk_validation(session: Session) -> None:
     user = _make_user(session)
     session.commit()
     client = _FakeBinanceClient()
     service = _make_service(session, client)
     bot = _create_bot(service, user.id)["bot"]
 
-    monkeypatch.setenv("HERMES_RISK_MAX_OPEN_POSITIONS", "0")
+    save_user_simulation_risk_limits(
+        session, user.id, replace(_PERMISSIVE_RISK_LIMITS, max_open_positions=0)
+    )
+    session.commit()
     result = service.resume(user.id, bot["id"], "resume-risk")
     session.commit()
 

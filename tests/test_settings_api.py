@@ -153,6 +153,18 @@ def test_no_permission_cannot_manage_risk_limits(
     assert response.status_code == 403
 
 
+def test_no_permission_cannot_manage_simulation_risk_limits(
+    no_permission_client: TestClient,
+) -> None:
+    assert (
+        no_permission_client.get("/settings/simulation-risk-limits").status_code == 403
+    )
+    response = no_permission_client.put(
+        "/settings/simulation-risk-limits", json={}, headers=_headers()
+    )
+    assert response.status_code == 403
+
+
 def test_no_permission_cannot_manage_trading_switch(
     no_permission_client: TestClient,
 ) -> None:
@@ -399,6 +411,112 @@ def test_put_risk_limits_without_origin_header_is_403(
     response = client.put(
         "/settings/risk-limits",
         json={},
+        headers={"Idempotency-Key": "test-key-1"},
+    )
+    assert response.status_code == 403
+
+
+# --- Simulation risk limits ---------------------------------------------------------
+
+
+def test_simulation_risk_limits_default_to_sensible_non_null_values(
+    authorized_client: tuple[TestClient, _FakeBinanceClient],
+) -> None:
+    """Unlike /settings/risk-limits, a brand-new user gets working
+    defaults here, never null -- Simulation must never require setup."""
+    client, _fake = authorized_client
+    response = client.get("/settings/simulation-risk-limits")
+    assert response.status_code == 200
+    body = response.json()
+    assert Decimal(body["max_order_notional_quote"]) == Decimal("1000")
+    assert Decimal(body["max_symbol_exposure_pct"]) == Decimal("50")
+    assert Decimal(body["max_total_exposure_pct"]) == Decimal("100")
+    assert Decimal(body["max_daily_loss_pct"]) == Decimal("20")
+    assert body["max_open_positions"] == 5
+    assert body["allowed_symbols"] == ["BTCUSDT", "ETHUSDT"]
+
+
+def test_put_simulation_risk_limits_round_trips_and_normalizes_symbols(
+    authorized_client: tuple[TestClient, _FakeBinanceClient],
+) -> None:
+    client, _fake = authorized_client
+    response = client.put(
+        "/settings/simulation-risk-limits",
+        json={
+            "max_order_notional_quote": "5000",
+            "max_symbol_exposure_pct": "25",
+            "max_total_exposure_pct": "80",
+            "max_daily_loss_pct": "10",
+            "max_open_positions": 3,
+            "allowed_symbols": ["btcusdt", "ETHUSDT", "btcusdt"],
+        },
+        headers=_headers(),
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert Decimal(body["max_order_notional_quote"]) == Decimal("5000")
+    assert body["max_open_positions"] == 3
+    assert body["allowed_symbols"] == ["BTCUSDT", "ETHUSDT"]
+
+    persisted = client.get("/settings/simulation-risk-limits").json()
+    assert Decimal(persisted["max_order_notional_quote"]) == Decimal("5000")
+    assert persisted["allowed_symbols"] == ["BTCUSDT", "ETHUSDT"]
+
+
+def test_put_simulation_risk_limits_rejects_a_non_positive_notional(
+    authorized_client: tuple[TestClient, _FakeBinanceClient],
+) -> None:
+    client, _fake = authorized_client
+    response = client.put(
+        "/settings/simulation-risk-limits",
+        json={
+            "max_order_notional_quote": "0",
+            "max_symbol_exposure_pct": "50",
+            "max_total_exposure_pct": "100",
+            "max_daily_loss_pct": "20",
+            "max_open_positions": 5,
+            "allowed_symbols": ["BTCUSDT"],
+        },
+        headers=_headers(),
+    )
+    assert response.status_code == 422
+
+
+def test_put_simulation_risk_limits_rejects_an_empty_symbol_list(
+    authorized_client: tuple[TestClient, _FakeBinanceClient],
+) -> None:
+    """Unlike the real-order limits, an empty list is never valid here --
+    a Simulation limit can be changed, never un-set."""
+    client, _fake = authorized_client
+    response = client.put(
+        "/settings/simulation-risk-limits",
+        json={
+            "max_order_notional_quote": "1000",
+            "max_symbol_exposure_pct": "50",
+            "max_total_exposure_pct": "100",
+            "max_daily_loss_pct": "20",
+            "max_open_positions": 5,
+            "allowed_symbols": [],
+        },
+        headers=_headers(),
+    )
+    assert response.status_code == 422
+
+
+def test_put_simulation_risk_limits_without_origin_header_is_403(
+    authorized_client: tuple[TestClient, _FakeBinanceClient],
+) -> None:
+    client, _fake = authorized_client
+    response = client.put(
+        "/settings/simulation-risk-limits",
+        json={
+            "max_order_notional_quote": "1000",
+            "max_symbol_exposure_pct": "50",
+            "max_total_exposure_pct": "100",
+            "max_daily_loss_pct": "20",
+            "max_open_positions": 5,
+            "allowed_symbols": ["BTCUSDT"],
+        },
         headers={"Idempotency-Key": "test-key-1"},
     )
     assert response.status_code == 403

@@ -56,21 +56,33 @@ Any later real-order/portfolio request for this user:
 ## 2. Per-user risk limits
 
 `user_risk_settings_service.py` reuses `risk_engine.RiskLimits` and
-`RiskEngine` directly — same six fields, same fail-closed "`None` means
-not configured, reject on that dimension" semantics the global,
-env-var-based limits already had. The only thing that changes is the
-source: a per-user Postgres row (`user_trading_settings`) instead of the
-process environment.
+`RiskEngine` directly — same six fields. Real orders and Simulation each
+get their own per-user row-backed limits, with **opposite** "not
+configured" postures:
 
-**Applies to real orders only.** `OrderService._evaluate_risk` resolves
-`RiskEngine(get_user_risk_limits(session, order.user_id))`.
-`SimulationOrderService._evaluate_risk` deliberately stays on the
-global, env-based `load_risk_limits()` — a brand-new user's per-user
-limits default to all-`None` (the only sane, symmetric default for "no
-row yet"), and switching Simulation to per-user limits too would reject
-every simulation order for every new user until they filled in six
-Settings fields. Simulation bots never need Binance credentials or risk
-configuration to exist — that must stay true for onboarding to work.
+- **Real orders** (`OrderService._evaluate_risk`, resolving
+  `RiskEngine(get_user_risk_limits(session, order.user_id))`): same
+  fail-closed "`None` means not configured, reject on that dimension"
+  semantics the old global, env-var-based limits had. A brand-new
+  user's row (or lack of one) means every real order is rejected until
+  they explicitly fill in Settings — deliberate: real money is at
+  stake, so a user must consciously choose their own limits before
+  Hermes will place a real order.
+- **Simulation** (`SimulationOrderService._evaluate_risk`, resolving
+  `RiskEngine(get_user_simulation_risk_limits(session, user_id))`): the
+  `simulation_*` columns (`20260818_0001` migration) are `NOT NULL`
+  with sensible `server_default`s, so a brand-new user's Simulation
+  bots work immediately with reasonable defaults — Settings only ever
+  changes the numbers, never un-sets them back to "not configured."
+  This replaces the original design (a single global,
+  `HERMES_RISK_*`-env-var-based `load_risk_limits()`, operator-only):
+  that had the same onboarding goal ("Simulation never requires any
+  setup") but only held if an operator had actually set those six env
+  vars on the deployment — if not, Simulation failed closed for
+  *every* user, with no way for anyone to fix it themselves. Per-user
+  columns with real defaults achieve the same onboarding goal without
+  that single point of failure, and let a user tune their own
+  Simulation limits from Settings exactly like their real-order ones.
 
 ## 3. Two-tier kill switch
 
@@ -143,6 +155,8 @@ touch the caller's own row):
 | DELETE | `/settings/binance-credentials` | `secrets.manage` | + origin + idempotency + rate limit; idempotent |
 | GET | `/settings/risk-limits` | `risk.read` | Wire `RiskLimits`, six nullable fields |
 | PUT | `/settings/risk-limits` | `risk.manage` | + origin + idempotency + rate limit; per-field validated (notional > 0, pct in [0,100], open_positions >= 1, symbols uppercased/deduped) |
+| GET | `/settings/simulation-risk-limits` | `risk.read` | Wire `RiskLimits`, six fields, **never** null (defaults apply) |
+| PUT | `/settings/simulation-risk-limits` | `risk.manage` | + origin + idempotency + rate limit; every field required (no "not configured" state), same per-field validation as `/settings/risk-limits` |
 | GET | `/settings/trading-switch` | `risk.read` | `{enabled}` |
 | PUT | `/settings/trading-switch` | `risk.manage` | + origin + idempotency + rate limit; `{enabled}` |
 
@@ -158,5 +172,6 @@ same as `trading_routes.py`/`bots_routes.py`.
 - The global kill switch (`TRADING_ENABLED`) and its activation runbook
   in `docs/architecture/trading.md` are unchanged.
 - `RiskEngine`'s own logic (the six checks, fail-closed on `None`) is
-  unchanged — only where its `RiskLimits` input comes from differs
-  between real orders (per-user) and Simulation (global).
+  unchanged — only where its `RiskLimits` input comes from differs: a
+  per-user Postgres row either way (§2), fail-closed-on-`None` for real
+  orders vs. `NOT NULL` with working defaults for Simulation.

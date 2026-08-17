@@ -1,5 +1,6 @@
-"""Settings REST API: each user's own Binance credentials, risk limits,
-and personal trading switch. Mirrors `trading_routes.py`'s shape exactly
+"""Settings REST API: each user's own Binance credentials, real-order
+risk limits, Simulation risk limits, and personal trading switch.
+Mirrors `trading_routes.py`'s shape exactly
 (thin routes, one DB session per request, business logic lives in
 `hermes_v2.trading.*`), and duplicates its own small session/client
 helpers rather than importing them, for the same reason `bots_routes.py`
@@ -42,13 +43,16 @@ from hermes_v2.trading.rate_limiting import (
     SETTINGS_CREDENTIALS_DELETE_RATE_LIMITER,
     SETTINGS_CREDENTIALS_PUT_RATE_LIMITER,
     SETTINGS_RISK_LIMITS_RATE_LIMITER,
+    SETTINGS_SIMULATION_RISK_LIMITS_RATE_LIMITER,
     SETTINGS_TRADING_SWITCH_RATE_LIMITER,
 )
 from hermes_v2.trading.risk_engine import RiskLimits
 from hermes_v2.trading.user_risk_settings_service import (
     get_user_risk_limits,
+    get_user_simulation_risk_limits,
     is_user_trading_enabled,
     save_user_risk_limits,
+    save_user_simulation_risk_limits,
     set_user_trading_enabled,
 )
 
@@ -117,6 +121,19 @@ def _serialize_risk_limits(limits: RiskLimits) -> dict[str, Any]:
     }
 
 
+def _serialize_simulation_risk_limits(limits: RiskLimits) -> dict[str, Any]:
+    """Every field is always present -- Simulation limits are never
+    "not configured," see `user_risk_settings_service.py`."""
+    return {
+        "max_order_notional_quote": str(limits.max_order_notional_quote),
+        "max_symbol_exposure_pct": str(limits.max_symbol_exposure_pct),
+        "max_total_exposure_pct": str(limits.max_total_exposure_pct),
+        "max_daily_loss_pct": str(limits.max_daily_loss_pct),
+        "max_open_positions": limits.max_open_positions,
+        "allowed_symbols": sorted(limits.allowed_symbols),
+    }
+
+
 # --- request bodies -----------------------------------------------------------
 
 
@@ -157,6 +174,39 @@ class RiskLimitsRequest(BaseModel):
             allowed_symbols=(
                 frozenset(self.allowed_symbols) if self.allowed_symbols else None
             ),
+        )
+
+
+class SimulationRiskLimitsRequest(BaseModel):
+    """Unlike `RiskLimitsRequest`, no field is optional -- a Simulation
+    limit can never be "not configured," only changed. See
+    `user_risk_settings_service.py`."""
+
+    max_order_notional_quote: Decimal = Field(gt=0)
+    max_symbol_exposure_pct: Decimal = Field(ge=0, le=100)
+    max_total_exposure_pct: Decimal = Field(ge=0, le=100)
+    max_daily_loss_pct: Decimal = Field(ge=0, le=100)
+    max_open_positions: int = Field(ge=1)
+    allowed_symbols: list[str] = Field(min_length=1)
+
+    @field_validator("allowed_symbols")
+    @classmethod
+    def _normalize_symbols(cls, value: list[str]) -> list[str]:
+        normalized = sorted(
+            {symbol.strip().upper() for symbol in value if symbol.strip()}
+        )
+        if not normalized:
+            raise ValueError("allowed_symbols must contain at least one symbol")
+        return normalized
+
+    def to_risk_limits(self) -> RiskLimits:
+        return RiskLimits(
+            max_order_notional_quote=self.max_order_notional_quote,
+            max_symbol_exposure_pct=self.max_symbol_exposure_pct,
+            max_total_exposure_pct=self.max_total_exposure_pct,
+            max_daily_loss_pct=self.max_daily_loss_pct,
+            max_open_positions=self.max_open_positions,
+            allowed_symbols=frozenset(self.allowed_symbols),
         )
 
 
@@ -273,6 +323,41 @@ async def put_risk_limits_route(
         updated = save_user_risk_limits(session, user_id, body.to_risk_limits())
         session.commit()
         return _serialize_risk_limits(updated)
+
+
+@router.get("/settings/simulation-risk-limits")
+async def get_simulation_risk_limits_route(
+    current_user: dict = Depends(require_permission("risk.read")),
+) -> dict[str, Any]:
+    user_id = _current_user_id(current_user)
+    session_factory = _session_factory()
+    with session_factory() as session:
+        return _serialize_simulation_risk_limits(
+            get_user_simulation_risk_limits(session, user_id)
+        )
+
+
+@router.put("/settings/simulation-risk-limits")
+async def put_simulation_risk_limits_route(
+    body: SimulationRiskLimitsRequest,
+    current_user: dict = Depends(require_permission("risk.manage")),
+    _idempotency_key: str = Depends(_idempotency_key_header),
+    _origin_check: None = Depends(require_trusted_origin),
+    _rate_limit: None = Depends(
+        rate_limit(
+            SETTINGS_SIMULATION_RISK_LIMITS_RATE_LIMITER,
+            "settings.simulation_risk_limits.put",
+        )
+    ),
+) -> dict[str, Any]:
+    user_id = _current_user_id(current_user)
+    session_factory = _session_factory()
+    with session_factory() as session:
+        updated = save_user_simulation_risk_limits(
+            session, user_id, body.to_risk_limits()
+        )
+        session.commit()
+        return _serialize_simulation_risk_limits(updated)
 
 
 # --- personal trading switch ------------------------------------------------------

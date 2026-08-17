@@ -7,6 +7,7 @@ the kill switch. Mirrors test_order_service.py's fixture shape.
 from __future__ import annotations
 
 import os
+from dataclasses import replace
 from decimal import Decimal
 
 import pytest
@@ -19,7 +20,11 @@ from hermes_v2.trading.bot_service import BotService
 from hermes_v2.trading.exchange_info_cache import ExchangeInfoCache
 from hermes_v2.trading.models import Bot, SimulationAccount, SimulationOrder
 from hermes_v2.trading.order_service import TradingDisabledError
+from hermes_v2.trading.risk_engine import RiskLimits
 from hermes_v2.trading.simulation_order_service import SimulationOrderService
+from hermes_v2.trading.user_risk_settings_service import (
+    save_user_simulation_risk_limits,
+)
 
 pytestmark = pytest.mark.database
 
@@ -82,12 +87,16 @@ def session_factory() -> sessionmaker:
 @pytest.fixture(autouse=True)
 def _risk_limits(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("TRADING_ENABLED", "true")
-    monkeypatch.setenv("HERMES_RISK_MAX_ORDER_NOTIONAL_USD", "10000")
-    monkeypatch.setenv("HERMES_RISK_MAX_SYMBOL_EXPOSURE_PCT", "100")
-    monkeypatch.setenv("HERMES_RISK_MAX_TOTAL_EXPOSURE_PCT", "100")
-    monkeypatch.setenv("HERMES_RISK_MAX_DAILY_LOSS_PCT", "100")
-    monkeypatch.setenv("HERMES_RISK_MAX_OPEN_POSITIONS", "10")
-    monkeypatch.setenv("HERMES_RISK_ALLOWED_SYMBOLS", "BTCUSDT")
+
+
+_PERMISSIVE_SIMULATION_RISK_LIMITS = RiskLimits(
+    max_order_notional_quote=Decimal("10000"),
+    max_symbol_exposure_pct=Decimal("100"),
+    max_total_exposure_pct=Decimal("100"),
+    max_daily_loss_pct=Decimal("100"),
+    max_open_positions=10,
+    allowed_symbols=frozenset({"BTCUSDT"}),
+)
 
 
 def _create_bot(
@@ -98,6 +107,10 @@ def _create_bot(
         session.add(user)
         session.commit()
         user_id = user.id
+        save_user_simulation_risk_limits(
+            session, user_id, _PERMISSIVE_SIMULATION_RISK_LIMITS
+        )
+        session.commit()
 
         bot_service = BotService(
             session, client, exchange_info_cache=ExchangeInfoCache()
@@ -209,13 +222,20 @@ def test_fee_is_deducted_from_cash_on_a_buy(
 
 
 def test_risk_engine_rejection_produces_no_fill(
-    monkeypatch: pytest.MonkeyPatch, session_factory: sessionmaker
+    session_factory: sessionmaker,
 ) -> None:
-    monkeypatch.setenv("HERMES_RISK_MAX_ORDER_NOTIONAL_USD", "1")
     client = _FakeClient()
     user_id, bot_id = _create_bot(session_factory, client)
 
     with session_factory() as session:
+        save_user_simulation_risk_limits(
+            session,
+            user_id,
+            replace(
+                _PERMISSIVE_SIMULATION_RISK_LIMITS,
+                max_order_notional_quote=Decimal("1"),
+            ),
+        )
         bot = session.get(Bot, bot_id)
         service = SimulationOrderService(
             session, client, exchange_info_cache=ExchangeInfoCache()

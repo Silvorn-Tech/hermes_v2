@@ -1,29 +1,36 @@
 """RiskEngine — the last gate between a validated order and Binance.
 
-Every limit is sourced from `HERMES_RISK_*` environment variables, never
-hardcoded here — this module invents no thresholds of its own. If a
-specific limit isn't configured, the check that depends on it **rejects**
-rather than passing silently. Concretely: until an operator sets *all six*
-`HERMES_RISK_*` variables, `RiskEngine.validate_order()` rejects every
-order, regardless of how safe it might be. This mirrors the codebase's
-existing fail-closed precedent — `HERMES_ALLOWED_ORIGINS` unset means CORS
-denies every origin (`api/app.py`), an unrecognized permission means
-`require_permission()` denies by construction (`auth/authorization.py`) —
-applied here to money instead of access. It is a deliberate safety default,
-not an oversight: an operator who wants to trade must decide, in writing, in
-their environment, what "too much" means before Hermes will place an order.
+Every limit comes from a `RiskLimits` the caller builds and passes in —
+this module invents no thresholds of its own and reads no configuration
+directly. If a specific limit is `None` ("not configured"), the check
+that depends on it **rejects** rather than passing silently. Concretely:
+until every one of the six fields is set, `RiskEngine.validate_order()`
+rejects every order, regardless of how safe it might be. This mirrors
+the codebase's existing fail-closed precedent — `HERMES_ALLOWED_ORIGINS`
+unset means CORS denies every origin (`api/app.py`), an unrecognized
+permission means `require_permission()` denies by construction
+(`auth/authorization.py`) — applied here to money instead of access.
+
+Where a caller's `RiskLimits` come from is deliberately their own
+decision, not this module's: `OrderService` and `SimulationOrderService`
+each source per-user limits from `user_risk_settings_service.py`, with
+opposite defaults for "no row yet" (fail-closed for real orders, since
+real money is at stake and a user must consciously choose their own
+limits; sensible non-`None` defaults for Simulation, since it's virtual
+money and must never require setup) — see that module's docstring.
 """
 
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal
 
 
 @dataclass(frozen=True)
 class RiskLimits:
-    """One deployment's configured risk limits. `None` means "not configured"."""
+    """One user's configured risk limits. `None` means "not configured"
+    (only a valid state for real-order limits — see
+    `user_risk_settings_service.py`)."""
 
     max_order_notional_quote: Decimal | None
     max_symbol_exposure_pct: Decimal | None
@@ -31,56 +38,6 @@ class RiskLimits:
     max_daily_loss_pct: Decimal | None
     max_open_positions: int | None
     allowed_symbols: frozenset[str] | None
-
-
-def _parse_decimal_env(name: str) -> Decimal | None:
-    raw_value = os.environ.get(name)
-    if raw_value is None or not raw_value.strip():
-        return None
-    try:
-        return Decimal(raw_value.strip())
-    except InvalidOperation as exc:
-        raise ValueError(f"{name} must be a decimal number") from exc
-
-
-def _parse_int_env(name: str) -> int | None:
-    raw_value = os.environ.get(name)
-    if raw_value is None or not raw_value.strip():
-        return None
-    try:
-        return int(raw_value.strip())
-    except ValueError as exc:
-        raise ValueError(f"{name} must be an integer") from exc
-
-
-def _parse_symbol_set_env(name: str) -> frozenset[str] | None:
-    raw_value = os.environ.get(name)
-    if raw_value is None or not raw_value.strip():
-        return None
-    symbols = {entry.strip().upper() for entry in raw_value.split(",") if entry.strip()}
-    return frozenset(symbols) if symbols else None
-
-
-def load_risk_limits() -> RiskLimits:
-    """Read every `HERMES_RISK_*` limit from the environment, at call time.
-
-    Not cached: an operator editing `.env` and restarting the process (the
-    same "no code change, no rebuild" rotation model as every other config
-    value in this codebase, see `docs/security/secrets-management.md`)
-    should see the new limits take effect without anything else changing.
-    """
-    return RiskLimits(
-        max_order_notional_quote=_parse_decimal_env(
-            "HERMES_RISK_MAX_ORDER_NOTIONAL_USD"
-        ),
-        max_symbol_exposure_pct=_parse_decimal_env(
-            "HERMES_RISK_MAX_SYMBOL_EXPOSURE_PCT"
-        ),
-        max_total_exposure_pct=_parse_decimal_env("HERMES_RISK_MAX_TOTAL_EXPOSURE_PCT"),
-        max_daily_loss_pct=_parse_decimal_env("HERMES_RISK_MAX_DAILY_LOSS_PCT"),
-        max_open_positions=_parse_int_env("HERMES_RISK_MAX_OPEN_POSITIONS"),
-        allowed_symbols=_parse_symbol_set_env("HERMES_RISK_ALLOWED_SYMBOLS"),
-    )
 
 
 @dataclass(frozen=True)
@@ -313,5 +270,4 @@ __all__ = [
     "RiskDecision",
     "RiskEngine",
     "RiskLimits",
-    "load_risk_limits",
 ]
