@@ -42,11 +42,6 @@ def run_snapshot_tick(
     scheduler thread, since nothing else would ever restart it."""
     try:
         client = BinanceClient()
-    except BinanceConfigurationError:
-        logger.warning("Portfolio snapshot skipped: Binance is not configured.")
-        return False
-
-    try:
         with session_factory() as session:
             snapshot = take_portfolio_snapshot(
                 session,
@@ -56,6 +51,9 @@ def run_snapshot_tick(
                 now=now,
             )
             session.commit()
+    except BinanceConfigurationError:
+        logger.warning("Portfolio snapshot skipped: Binance is not configured.")
+        return False
     except Exception:
         logger.exception("Portfolio snapshot tick failed; will retry next interval.")
         return False
