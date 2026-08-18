@@ -49,6 +49,7 @@ from hermes_v2.trading.models import (
     BotExecutionMode,
     SimulationAccount,
     SimulationOrder,
+    SimulationOrderStatus,
     SimulationSnapshot,
 )
 from hermes_v2.trading.origin_check import require_trusted_origin
@@ -65,6 +66,7 @@ from hermes_v2.trading.simulation_config import (
     default_simulation_initial_capital,
     default_simulation_quote_asset,
 )
+from hermes_v2.trading.simulation_order_service import simulation_order_to_response
 from hermes_v2.trading.simulation_portfolio_service import (
     compute_position_value,
     compute_realized_pnl_today,
@@ -388,6 +390,40 @@ async def get_bot_performance_route(
                 else None
             ),
             "exposure_pct": str(exposure_pct),
+        }
+
+
+@router.get("/bots/{bot_id}/trades")
+async def get_bot_trades_route(
+    bot_id: uuid.UUID,
+    current_user: dict = Depends(require_permission("bots.read")),
+    _portfolio_permission: dict = Depends(require_permission("portfolio.read")),
+) -> dict[str, Any]:
+    """Every FILLED simulation order for this bot, oldest first -- powers
+    the entry/exit markers on the bot's price chart. Terminal states other
+    than FILLED (REJECTED, FAILED) never opened or closed a real position,
+    so they carry no fill price and are excluded rather than shown as a
+    marker with nothing meaningful to plot."""
+    user_id = _current_user_id(current_user)
+    session_factory = _session_factory()
+    with session_factory() as session:
+        bot = _get_owned_bot(session, user_id, bot_id)
+        if bot.execution_mode != BotExecutionMode.SIMULATION:
+            raise _not_available_for_live(bot)
+
+        orders = session.scalars(
+            select(SimulationOrder)
+            .where(
+                SimulationOrder.bot_id == bot.id,
+                SimulationOrder.status == SimulationOrderStatus.FILLED,
+            )
+            .order_by(SimulationOrder.terminal_at.asc())
+        ).all()
+
+        return {
+            "available": True,
+            "execution_mode": bot.execution_mode.value,
+            "trades": [simulation_order_to_response(order) for order in orders],
         }
 
 
