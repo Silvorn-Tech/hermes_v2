@@ -34,12 +34,17 @@ from hermes_v2.integrations.binance import (
     BinanceError,
     BinanceRateLimitError,
 )
+from hermes_v2.trading.binance_credentials_service import (
+    CredentialsNotConfiguredError,
+    get_decrypted_client,
+)
 from hermes_v2.trading.bot_service import (
     BotNotFoundError,
     BotService,
     BotServiceError,
     InvalidBotTransitionError,
 )
+from hermes_v2.trading.credentials_encryption import CredentialsEncryptionError
 from hermes_v2.trading.idempotency import (
     IdempotencyConflictError,
     IdempotencyInProgressError,
@@ -47,14 +52,21 @@ from hermes_v2.trading.idempotency import (
 from hermes_v2.trading.models import (
     Bot,
     BotExecutionMode,
+    Order,
+    OrderStatus,
     SimulationAccount,
     SimulationOrder,
     SimulationOrderStatus,
     SimulationSnapshot,
 )
+from hermes_v2.trading.live_portfolio_service import (
+    compute_live_realized_pnl_today,
+    compute_live_trade_stats,
+)
 from hermes_v2.trading.origin_check import require_trusted_origin
 from hermes_v2.trading.portfolio_snapshot_service import compute_max_drawdown_pct
 from hermes_v2.trading.rate_limiting import (
+    BOT_ACTIVATE_LIVE_RATE_LIMITER,
     BOT_CREATE_RATE_LIMITER,
     BOT_DELETE_RATE_LIMITER,
     BOT_PAUSE_RATE_LIMITER,
@@ -77,6 +89,11 @@ from hermes_v2.trading.simulation_portfolio_service import (
 
 router = APIRouter()
 
+# No SimulationAccount.quote_asset equivalent exists for a LIVE bot (it
+# has no per-bot account row at all) -- matches trading_routes.py's own
+# constant for the same reason.
+_DEFAULT_QUOTE_ASSET = "USDT"
+
 
 # --- session / client plumbing ------------------------------------------------
 
@@ -88,13 +105,28 @@ def _session_factory() -> sessionmaker[Session]:
 
 
 def _new_public_binance_client() -> BinanceClient:
-    """No credentials -- every bot today is SIMULATION (see
-    BotExecutionMode), and BotService never actually calls a method on
-    `self._client` for list/get/pause/resume/stop/delete, so this never
-    needs to be a real, per-user-credentialed client. This is the
-    concrete mechanism that makes "no bot lifecycle action requires a
-    connected Binance account" true today."""
+    """No credentials -- for market-data-only reads. SIMULATION bots
+    never need more than this (they only ever call the unsigned
+    `get_market_data`)."""
     return BinanceClient(api_key="", api_secret="")  # nosec B106 - deliberately empty
+
+
+def _new_optional_binance_client_for_user(
+    session: Session, user_id: uuid.UUID
+) -> BinanceClient | None:
+    """Best-effort -- `None` if this user has no connected/verified
+    Binance account, or credential encryption isn't configured. A real,
+    credentialed client also works fine for a SIMULATION bot's
+    market-data-only reads (`get_market_data` is unsigned regardless of
+    the client's credentials), so resolving this unconditionally for
+    every mutating bot action is always safe -- it's only *required*,
+    not merely helpful, once the bot turns out to be LIVE, since
+    `OrderService.create_order()` needs a real signed client to place a
+    real order. See `_run_bot_service_action`."""
+    try:
+        return get_decrypted_client(session, user_id)
+    except (CredentialsNotConfiguredError, CredentialsEncryptionError):
+        return None
 
 
 def _current_user_id(current_user: dict[str, Any]) -> uuid.UUID:
@@ -160,6 +192,7 @@ def _http_exception_for_binance_error(exc: BinanceError) -> HTTPException:
 
 
 def _run_bot_service_action(
+    user_id: uuid.UUID,
     action: Callable[[BotService], dict[str, Any]],
 ) -> dict[str, Any]:
     """Shared transaction/error-handling wrapper, mirroring
@@ -167,14 +200,22 @@ def _run_bot_service_action(
     BotServiceError still commits, since the audit/idempotency rows
     BotService already wrote before raising are real and must survive.
 
-    TODO(LIVE bots): once bot creation can produce a LIVE bot, this must
-    branch on the bot's `execution_mode` and resolve a required, per-user
-    credentialed client (trading_routes._new_binance_client_for_user's
-    equivalent) for that case -- the public client below is only correct
-    because every bot today is SIMULATION."""
+    Resolves a best-effort per-user credentialed client up front (falls
+    back to the public, credential-less one if this user has none
+    connected) rather than branching on the bot's `execution_mode` --
+    that would require loading the bot before this wrapper even calls
+    into BotService, and a real client works identically to the public
+    one for SIMULATION's market-data-only reads. This is what makes a
+    LIVE bot's pause/resume actually place a real, correctly-signed
+    order instead of silently getting a blank-credential client; see
+    `_new_optional_binance_client_for_user`'s own docstring for why the
+    fallback can never silently succeed with the wrong credentials."""
     session_factory = _session_factory()
     with session_factory() as session:
-        client = _new_public_binance_client()
+        client = (
+            _new_optional_binance_client_for_user(session, user_id)
+            or _new_public_binance_client()
+        )
         service = BotService(session, client)
         try:
             result = action(service)
@@ -275,12 +316,6 @@ async def get_bot_portfolio_route(
     session_factory = _session_factory()
     with session_factory() as session:
         bot = _get_owned_bot(session, user_id, bot_id)
-        if bot.execution_mode != BotExecutionMode.SIMULATION:
-            raise _not_available_for_live(bot)
-
-        account = session.scalar(
-            select(SimulationAccount).where(SimulationAccount.bot_id == bot.id)
-        )
         position = bot.position
         current_quantity = (
             Decimal(position.current_quantity) if position else Decimal("0")
@@ -295,6 +330,25 @@ async def get_bot_portfolio_route(
                 raise _http_exception_for_binance_error(exc) from exc
             market_price = Decimal(str(market_data["last_price"]))
 
+        if bot.execution_mode == BotExecutionMode.LIVE:
+            # No ring-fenced per-bot capital exists for a LIVE bot (it
+            # trades against the user's one shared real Binance balance),
+            # so there is no cash/exposure/return% to report -- see
+            # live_portfolio_service.py's module docstring.
+            position_value = compute_position_value(current_quantity, market_price)
+            return {
+                "available": True,
+                "execution_mode": bot.execution_mode.value,
+                "quote_asset": _DEFAULT_QUOTE_ASSET,
+                "current_quantity": str(current_quantity),
+                "position_value_quote": str(position_value),
+                "total_value_quote": str(position_value),
+                "return_pct": None,
+            }
+
+        account = session.scalar(
+            select(SimulationAccount).where(SimulationAccount.bot_id == bot.id)
+        )
         cash_balance = Decimal(account.cash_balance_quote)
         position_value = compute_position_value(current_quantity, market_price)
         total_value = compute_total_value(cash_balance, current_quantity, market_price)
@@ -329,12 +383,6 @@ async def get_bot_performance_route(
     session_factory = _session_factory()
     with session_factory() as session:
         bot = _get_owned_bot(session, user_id, bot_id)
-        if bot.execution_mode != BotExecutionMode.SIMULATION:
-            raise _not_available_for_live(bot)
-
-        account = session.scalar(
-            select(SimulationAccount).where(SimulationAccount.bot_id == bot.id)
-        )
         position = bot.position
         current_quantity = (
             Decimal(position.current_quantity) if position else Decimal("0")
@@ -349,6 +397,33 @@ async def get_bot_performance_route(
                 raise _http_exception_for_binance_error(exc) from exc
             market_price = Decimal(str(market_data["last_price"]))
 
+        if bot.execution_mode == BotExecutionMode.LIVE:
+            live_orders = session.scalars(
+                select(Order).where(
+                    Order.bot_id == bot.id, Order.status == OrderStatus.FILLED
+                )
+            ).all()
+            live_realized_pnl_today = compute_live_realized_pnl_today(live_orders)
+            live_trade_stats = compute_live_trade_stats(live_orders)
+            position_value = compute_position_value(current_quantity, market_price)
+            return {
+                "available": True,
+                "execution_mode": bot.execution_mode.value,
+                "total_value_quote": str(position_value),
+                "return_pct": None,
+                "max_drawdown_pct": None,
+                "realized_pnl_today_quote": str(live_realized_pnl_today),
+                "trade_count": live_trade_stats.trade_count,
+                "win_rate_pct": (
+                    str(live_trade_stats.win_rate_pct)
+                    if live_trade_stats.win_rate_pct is not None
+                    else None
+                ),
+            }
+
+        account = session.scalar(
+            select(SimulationAccount).where(SimulationAccount.bot_id == bot.id)
+        )
         cash_balance = Decimal(account.cash_balance_quote)
         position_value = compute_position_value(current_quantity, market_price)
         total_value = compute_total_value(cash_balance, current_quantity, market_price)
@@ -440,6 +515,7 @@ async def create_bot_route(
 ) -> dict[str, Any]:
     user_id = _current_user_id(current_user)
     return _run_bot_service_action(
+        user_id,
         lambda service: service.create_bot(
             user_id=user_id,
             name=body.name,
@@ -451,7 +527,7 @@ async def create_bot_route(
             idempotency_key=idempotency_key,
             strategy_model=body.strategy_model,
             strategy_config=body.strategy_config,
-        )
+        ),
     )
 
 
@@ -466,6 +542,7 @@ async def update_bot_route(
 ) -> dict[str, Any]:
     user_id = _current_user_id(current_user)
     return _run_bot_service_action(
+        user_id,
         lambda service: service.update_bot(
             user_id=user_id,
             bot_id=bot_id,
@@ -474,7 +551,7 @@ async def update_bot_route(
             target_quantity=body.target_quantity,
             strategy_model=body.strategy_model,
             strategy_config=body.strategy_config,
-        )
+        ),
     )
 
 
@@ -488,9 +565,10 @@ async def pause_bot_route(
 ) -> dict[str, Any]:
     user_id = _current_user_id(current_user)
     return _run_bot_service_action(
+        user_id,
         lambda service: service.pause(
             user_id=user_id, bot_id=bot_id, idempotency_key=idempotency_key
-        )
+        ),
     )
 
 
@@ -504,9 +582,10 @@ async def resume_bot_route(
 ) -> dict[str, Any]:
     user_id = _current_user_id(current_user)
     return _run_bot_service_action(
+        user_id,
         lambda service: service.resume(
             user_id=user_id, bot_id=bot_id, idempotency_key=idempotency_key
-        )
+        ),
     )
 
 
@@ -520,9 +599,10 @@ async def stop_bot_route(
 ) -> dict[str, Any]:
     user_id = _current_user_id(current_user)
     return _run_bot_service_action(
+        user_id,
         lambda service: service.stop(
             user_id=user_id, bot_id=bot_id, idempotency_key=idempotency_key
-        )
+        ),
     )
 
 
@@ -536,9 +616,29 @@ async def delete_bot_route(
 ) -> dict[str, Any]:
     user_id = _current_user_id(current_user)
     return _run_bot_service_action(
+        user_id,
         lambda service: service.delete_bot(
             user_id=user_id, bot_id=bot_id, idempotency_key=idempotency_key
-        )
+        ),
+    )
+
+
+@router.post("/bots/{bot_id}/activate-live")
+async def activate_bot_live_route(
+    bot_id: uuid.UUID,
+    current_user: dict = Depends(require_permission("bots.activate_live")),
+    idempotency_key: str = Depends(_idempotency_key_header),
+    _origin_check: None = Depends(require_trusted_origin),
+    _rate_limit: None = Depends(
+        rate_limit(BOT_ACTIVATE_LIVE_RATE_LIMITER, "bots.activate_live")
+    ),
+) -> dict[str, Any]:
+    user_id = _current_user_id(current_user)
+    return _run_bot_service_action(
+        user_id,
+        lambda service: service.activate_live(
+            user_id=user_id, bot_id=bot_id, idempotency_key=idempotency_key
+        ),
     )
 
 

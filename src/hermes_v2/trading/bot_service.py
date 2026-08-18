@@ -61,6 +61,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from hermes_v2.integrations.binance import BinanceClient, BinanceError
+from hermes_v2.trading.binance_credentials_service import get_credential_status
 from hermes_v2.trading.exchange_info_cache import ExchangeInfoCache
 from hermes_v2.trading.idempotency import (
     derive_binance_client_order_id,
@@ -490,6 +491,100 @@ class BotService:
             )
         )
         self._session.flush()
+        return response
+
+    def activate_live(
+        self, user_id: uuid.UUID, bot_id: uuid.UUID, idempotency_key: str
+    ) -> dict[str, Any]:
+        """One-way SIMULATION -> LIVE promotion. There is no
+        deactivate_live() -- once LIVE, always LIVE (see
+        `BotExecutionMode`'s docstring). Places no order itself: the
+        user's next Resume click places this bot's first real order,
+        through the exact same `_transition()` path a LIVE bot's
+        pause/resume has always used, even before this method existed.
+        Requires the bot to be PAUSED (the same state Resume itself
+        requires) and this user to have a connected, verified Binance
+        credential -- activating a bot that could never place a real
+        order would be a silent trap the next Resume click springs."""
+        endpoint = f"POST /bots/{bot_id}/activate-live"
+        reservation = reserve(
+            self._session, user_id, endpoint, idempotency_key, {"bot_id": str(bot_id)}
+        )
+        if not reservation.is_new:
+            return reservation.stored_response
+
+        bot = self._load_bot_for_update(user_id, bot_id)
+        if bot is None:
+            response = {"bot": None, "status": "REJECTED", "reason": "Bot not found."}
+            finalize(self._session, reservation.key_row_id, response)
+            self._audit(
+                user_id,
+                "bot.activate_live",
+                AuditResult.REJECTED,
+                "Bot not found",
+                bot_id=bot_id,
+            )
+            raise BotNotFoundError(f"No bot {bot_id} for this user.")
+
+        if bot.execution_mode != BotExecutionMode.SIMULATION:
+            reason = (
+                "Bot is already LIVE; activation is one-way and cannot be repeated."
+            )
+            response = {
+                "bot": bot_to_response(bot),
+                "status": "REJECTED",
+                "reason": reason,
+            }
+            finalize(self._session, reservation.key_row_id, response)
+            self._audit(
+                user_id, "bot.activate_live", AuditResult.REJECTED, reason, bot=bot
+            )
+            raise InvalidBotTransitionError(reason)
+
+        if bot.status != BotStatus.PAUSED:
+            reason = f"Bot is {bot.status.value}; can only activate LIVE while PAUSED."
+            response = {
+                "bot": bot_to_response(bot),
+                "status": "REJECTED",
+                "reason": reason,
+            }
+            finalize(self._session, reservation.key_row_id, response)
+            self._audit(
+                user_id, "bot.activate_live", AuditResult.REJECTED, reason, bot=bot
+            )
+            raise InvalidBotTransitionError(reason)
+
+        credential_status = get_credential_status(self._session, user_id)
+        if not credential_status.configured:
+            reason = (
+                "Connect a verified Binance account in Settings before activating LIVE."
+            )
+            response = {
+                "bot": bot_to_response(bot),
+                "status": "REJECTED",
+                "reason": reason,
+            }
+            finalize(self._session, reservation.key_row_id, response)
+            self._audit(
+                user_id, "bot.activate_live", AuditResult.REJECTED, reason, bot=bot
+            )
+            raise InvalidBotTransitionError(reason)
+
+        bot.execution_mode = BotExecutionMode.LIVE
+        self._session.flush()
+        response = {
+            "bot": bot_to_response(bot),
+            "status": bot.status.value,
+            "reason": None,
+        }
+        finalize(self._session, reservation.key_row_id, response)
+        self._audit(
+            user_id,
+            "bot.activate_live",
+            AuditResult.SUCCESS,
+            "Bot promoted SIMULATION -> LIVE.",
+            bot=bot,
+        )
         return response
 
     def _transition(

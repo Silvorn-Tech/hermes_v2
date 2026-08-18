@@ -226,10 +226,14 @@ def test_portfolio_route_after_a_virtual_buy_reflects_the_fill(
     assert Decimal(body["position_value_quote"]) == Decimal("1000")
 
 
-def test_portfolio_route_is_not_available_for_live_bots(
+def test_portfolio_route_returns_real_data_for_a_live_bot(
     authorized_client: tuple[TestClient, _FakeBinanceClient],
     db_session: Session,
 ) -> None:
+    """LIVE bots get a real portfolio view now (no longer a 409) -- but
+    with a smaller field set than SIMULATION's, since there is no
+    ring-fenced per-bot capital for a LIVE bot to report cash/exposure
+    against."""
     client, _fake = authorized_client
     create_response = client.post("/bots", json=_create_body(), headers=_headers())
     bot_id = create_response.json()["bot"]["id"]
@@ -239,8 +243,18 @@ def test_portfolio_route_is_not_available_for_live_bots(
     db_session.commit()
 
     response = client.get(f"/bots/{bot_id}/portfolio")
-    assert response.status_code == 409
-    assert response.json()["detail"]["available"] is False
+    assert response.status_code == 200
+    body = response.json()
+    assert body["available"] is True
+    assert body["execution_mode"] == "LIVE"
+    assert Decimal(body["current_quantity"]) == Decimal("0")
+    assert Decimal(body["position_value_quote"]) == Decimal("0")
+    assert Decimal(body["total_value_quote"]) == Decimal("0")
+    assert body["return_pct"] is None
+    # SIMULATION-only fields must never leak into a LIVE response.
+    assert "cash_balance_quote" not in body
+    assert "initial_capital_quote" not in body
+    assert "exposure_pct" not in body
 
 
 # --- GET /bots/{id}/performance -----------------------------------------------
@@ -289,7 +303,7 @@ def test_performance_route_after_a_round_trip_counts_one_trade(
     assert fake.create_order_calls == []
 
 
-def test_performance_route_is_not_available_for_live_bots(
+def test_performance_route_returns_real_data_for_a_fresh_live_bot(
     authorized_client: tuple[TestClient, _FakeBinanceClient],
     db_session: Session,
 ) -> None:
@@ -302,8 +316,79 @@ def test_performance_route_is_not_available_for_live_bots(
     db_session.commit()
 
     response = client.get(f"/bots/{bot_id}/performance")
-    assert response.status_code == 409
-    assert response.json()["detail"]["available"] is False
+    assert response.status_code == 200
+    body = response.json()
+    assert body["available"] is True
+    assert body["execution_mode"] == "LIVE"
+    assert body["trade_count"] == 0
+    assert body["win_rate_pct"] is None
+    assert Decimal(body["realized_pnl_today_quote"]) == Decimal("0")
+    assert body["return_pct"] is None
+    assert body["max_drawdown_pct"] is None
+    assert "exposure_pct" not in body
+
+
+def test_performance_route_computes_trade_stats_from_real_orders_for_a_live_bot(
+    authorized_client: tuple[TestClient, _FakeBinanceClient],
+    db_session: Session,
+) -> None:
+    """The LIVE branch reads real `Order` rows filtered by `bot_id` --
+    this seeds a closed BUY/SELL round-trip directly (bypassing the full
+    OrderService pipeline, which is already covered by
+    test_bot_service.py's LIVE pause/resume tests) to exercise
+    live_portfolio_service.py's aggregation through the real route."""
+    from datetime import UTC, datetime
+
+    from hermes_v2.trading.models import Order, OrderSide, OrderStatus, OrderType
+
+    client, _fake = authorized_client
+    create_response = client.post("/bots", json=_create_body(), headers=_headers())
+    bot_id = create_response.json()["bot"]["id"]
+
+    bot = db_session.get(Bot, bot_id)
+    bot.execution_mode = BotExecutionMode.LIVE
+    db_session.commit()
+
+    now = datetime.now(UTC)
+    db_session.add_all(
+        [
+            Order(
+                user_id=bot.user_id,
+                bot_id=bot.id,
+                symbol="BTCUSDT",
+                side=OrderSide.BUY,
+                order_type=OrderType.MARKET,
+                status=OrderStatus.FILLED,
+                requested_quantity=Decimal("0.02"),
+                executed_quantity=Decimal("0.02"),
+                average_fill_price=Decimal("50000"),
+                binance_client_order_id="test-live-perf-buy-1",
+                terminal_at=now,
+            ),
+            Order(
+                user_id=bot.user_id,
+                bot_id=bot.id,
+                symbol="BTCUSDT",
+                side=OrderSide.SELL,
+                order_type=OrderType.MARKET,
+                status=OrderStatus.FILLED,
+                requested_quantity=Decimal("0.02"),
+                executed_quantity=Decimal("0.02"),
+                average_fill_price=Decimal("51000"),
+                binance_client_order_id="test-live-perf-sell-1",
+                terminal_at=now,
+            ),
+        ]
+    )
+    db_session.commit()
+
+    response = client.get(f"/bots/{bot_id}/performance")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["trade_count"] == 1
+    assert body["win_rate_pct"] == "100"
+    # Bought at 50000, sold at 51000 for 0.02 BTC: a real, computed profit.
+    assert Decimal(body["realized_pnl_today_quote"]) == Decimal("20")
 
 
 # --- GET /bots/{id}/trades ------------------------------------------------------
