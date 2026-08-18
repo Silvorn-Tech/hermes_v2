@@ -27,6 +27,13 @@ BOT_PAUSE_RATE_LIMITER = SlidingWindowRateLimiter(max_requests=20, window_second
 BOT_RESUME_RATE_LIMITER = SlidingWindowRateLimiter(max_requests=20, window_seconds=60)
 BOT_STOP_RATE_LIMITER = SlidingWindowRateLimiter(max_requests=20, window_seconds=60)
 BOT_DELETE_RATE_LIMITER = SlidingWindowRateLimiter(max_requests=20, window_seconds=60)
+# Tighter than the other bot-lifecycle limiters: a real-money,
+# irreversible consequence, not just a state flip -- mirrors
+# SETTINGS_CREDENTIALS_PUT_RATE_LIMITER's tighter default for the same
+# reason.
+BOT_ACTIVATE_LIVE_RATE_LIMITER = SlidingWindowRateLimiter(
+    max_requests=10, window_seconds=60
+)
 
 # Tighter than the others: this one hits real Binance to verify the
 # submitted key/secret before anything is persisted, unlike every other
@@ -57,6 +64,7 @@ _ALL_TRADING_RATE_LIMITERS = (
     BOT_RESUME_RATE_LIMITER,
     BOT_STOP_RATE_LIMITER,
     BOT_DELETE_RATE_LIMITER,
+    BOT_ACTIVATE_LIVE_RATE_LIMITER,
     SETTINGS_CREDENTIALS_PUT_RATE_LIMITER,
     SETTINGS_CREDENTIALS_DELETE_RATE_LIMITER,
     SETTINGS_RISK_LIMITS_RATE_LIMITER,
@@ -73,6 +81,7 @@ def reset_trading_rate_limiters() -> None:
 
 
 __all__ = [
+    "BOT_ACTIVATE_LIVE_RATE_LIMITER",
     "BOT_CREATE_RATE_LIMITER",
     "BOT_DELETE_RATE_LIMITER",
     "BOT_PAUSE_RATE_LIMITER",
