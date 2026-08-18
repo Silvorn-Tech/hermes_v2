@@ -635,6 +635,28 @@ class BotService:
         inner_key = f"bot-{op}:{bot_id}:{idempotency_key}"
         is_simulation = bot.execution_mode == BotExecutionMode.SIMULATION
 
+        if cfg.side == "BUY" and not is_simulation:
+            insufficient_reason = self._check_sufficient_real_balance(
+                position, quantity
+            )
+            if insufficient_reason is not None:
+                bot.status = prior_status
+                self._session.flush()
+                response = {
+                    "bot": bot_to_response(bot),
+                    "status": "REJECTED",
+                    "reason": insufficient_reason,
+                }
+                finalize(self._session, reservation.key_row_id, response)
+                self._audit(
+                    user_id,
+                    cfg.audit_action,
+                    AuditResult.REJECTED,
+                    insufficient_reason,
+                    bot=bot,
+                )
+                return response
+
         try:
             if is_simulation:
                 simulation_service = SimulationOrderService(
@@ -775,6 +797,43 @@ class BotService:
         return response
 
     # --- internals --------------------------------------------------------------
+
+    def _check_sufficient_real_balance(
+        self, position: BotPosition, quantity: Decimal
+    ) -> str | None:
+        """Fast, real-balance pre-check for a LIVE Resume (a BUY), run
+        before the much slower `OrderService`/`RiskEngine` pipeline (which
+        walks full trade history for every held asset). A bot promoted
+        from SIMULATION keeps whatever `target_quantity` it last saved —
+        sized against that bot's *virtual* capital, with no relationship
+        to the real account balance — so without this check, a resume
+        would sit through the slow real-account pipeline only to fail at
+        the very end (or, on a well-funded account, silently succeed at
+        a size the operator never actually intended). Returns a rejection
+        reason, or `None` if there's enough real balance to proceed."""
+        try:
+            balances = {b["asset"]: b for b in self._client.get_balances()}
+            market_price = Decimal(
+                str(self._client.get_market_data(position.instrument)["last_price"])
+            )
+        except BinanceError as exc:
+            return f"Could not verify your real Binance balance: {exc}"
+
+        quote_balance = balances.get(self._quote_asset)
+        available = (
+            Decimal(str(quote_balance["free"])) if quote_balance else Decimal("0")
+        )
+        required = quantity * market_price
+        if required > available:
+            return (
+                f"Insufficient real balance: this bot's target quantity "
+                f"({quantity} {position.instrument}) needs about "
+                f"{required:.2f} {self._quote_asset}, but only "
+                f"{available:.2f} {self._quote_asset} is available in your "
+                f"connected Binance account. Adjust the bot's target "
+                f"exposure before resuming."
+            )
+        return None
 
     def _load_bot_for_update(self, user_id: uuid.UUID, bot_id: uuid.UUID) -> Bot | None:
         return self._session.execute(
