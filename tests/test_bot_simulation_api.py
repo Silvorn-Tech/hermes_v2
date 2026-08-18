@@ -457,10 +457,12 @@ def test_trades_route_excludes_a_rejected_order(
     assert response.json()["trades"] == []
 
 
-def test_trades_route_is_not_available_for_live_bots(
+def test_trades_route_for_a_fresh_live_bot_is_empty(
     authorized_client: tuple[TestClient, _FakeBinanceClient],
     db_session: Session,
 ) -> None:
+    """LIVE bots get real trade markers now (no longer a 409) -- the
+    price chart is always visible, for SIMULATION and LIVE alike."""
     client, _fake = authorized_client
     create_response = client.post("/bots", json=_create_body(), headers=_headers())
     bot_id = create_response.json()["bot"]["id"]
@@ -470,8 +472,86 @@ def test_trades_route_is_not_available_for_live_bots(
     db_session.commit()
 
     response = client.get(f"/bots/{bot_id}/trades")
-    assert response.status_code == 409
-    assert response.json()["detail"]["available"] is False
+    assert response.status_code == 200
+    body = response.json()
+    assert body["available"] is True
+    assert body["execution_mode"] == "LIVE"
+    assert body["trades"] == []
+
+
+def test_trades_route_lists_real_fills_for_a_live_bot(
+    authorized_client: tuple[TestClient, _FakeBinanceClient],
+    db_session: Session,
+) -> None:
+    """The LIVE branch reads real `Order` rows filtered by `bot_id`,
+    oldest first -- mirrors the SIMULATION branch's own round-trip test
+    above, but against the real orders table."""
+    from datetime import UTC, datetime
+
+    from hermes_v2.trading.models import Order, OrderSide, OrderStatus, OrderType
+
+    client, _fake = authorized_client
+    create_response = client.post("/bots", json=_create_body(), headers=_headers())
+    bot_id = create_response.json()["bot"]["id"]
+
+    bot = db_session.get(Bot, bot_id)
+    bot.execution_mode = BotExecutionMode.LIVE
+    db_session.commit()
+
+    now = datetime.now(UTC)
+    db_session.add_all(
+        [
+            Order(
+                user_id=bot.user_id,
+                bot_id=bot.id,
+                symbol="BTCUSDT",
+                side=OrderSide.BUY,
+                order_type=OrderType.MARKET,
+                status=OrderStatus.FILLED,
+                requested_quantity=Decimal("0.02"),
+                executed_quantity=Decimal("0.02"),
+                average_fill_price=Decimal("50000"),
+                binance_client_order_id="test-live-trades-buy-1",
+                terminal_at=now,
+            ),
+            Order(
+                user_id=bot.user_id,
+                bot_id=bot.id,
+                symbol="BTCUSDT",
+                side=OrderSide.SELL,
+                order_type=OrderType.MARKET,
+                status=OrderStatus.FILLED,
+                requested_quantity=Decimal("0.02"),
+                executed_quantity=Decimal("0.02"),
+                average_fill_price=Decimal("51000"),
+                binance_client_order_id="test-live-trades-sell-1",
+                terminal_at=now,
+            ),
+            # A REJECTED order never filled -- must not show up as a marker.
+            Order(
+                user_id=bot.user_id,
+                bot_id=bot.id,
+                symbol="BTCUSDT",
+                side=OrderSide.BUY,
+                order_type=OrderType.MARKET,
+                status=OrderStatus.REJECTED,
+                requested_quantity=Decimal("0.02"),
+                executed_quantity=Decimal("0"),
+                binance_client_order_id="test-live-trades-rejected-1",
+                terminal_at=now,
+            ),
+        ]
+    )
+    db_session.commit()
+
+    response = client.get(f"/bots/{bot_id}/trades")
+    assert response.status_code == 200
+    trades = response.json()["trades"]
+    assert len(trades) == 2
+    assert trades[0]["side"] == "BUY"
+    assert Decimal(trades[0]["fill_price"]) == Decimal("50000")
+    assert trades[1]["side"] == "SELL"
+    assert Decimal(trades[1]["fill_price"]) == Decimal("51000")
 
 
 # --- Simulation is never visible through the real account endpoints ----------

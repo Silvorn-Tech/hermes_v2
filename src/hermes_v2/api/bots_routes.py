@@ -159,17 +159,17 @@ def _get_owned_bot(session: Session, user_id: uuid.UUID, bot_id: uuid.UUID) -> B
     return bot
 
 
-def _not_available_for_live(bot: Bot) -> HTTPException:
-    return HTTPException(
-        status_code=409,
-        detail={
-            "available": False,
-            "reason": (
-                "This view is only available for SIMULATION bots in this "
-                "release; the bot is LIVE."
-            ),
-        },
-    )
+def _live_order_to_trade_response(order: Order) -> dict[str, Any]:
+    return {
+        "side": order.side.value,
+        "fill_price": (
+            str(order.average_fill_price)
+            if order.average_fill_price is not None
+            else None
+        ),
+        "executed_quantity": str(order.executed_quantity),
+        "terminal_at": order.terminal_at.isoformat() if order.terminal_at else None,
+    }
 
 
 def _http_exception_for_binance_error(exc: BinanceError) -> HTTPException:
@@ -474,17 +474,30 @@ async def get_bot_trades_route(
     current_user: dict = Depends(require_permission("bots.read")),
     _portfolio_permission: dict = Depends(require_permission("portfolio.read")),
 ) -> dict[str, Any]:
-    """Every FILLED simulation order for this bot, oldest first -- powers
-    the entry/exit markers on the bot's price chart. Terminal states other
-    than FILLED (REJECTED, FAILED) never opened or closed a real position,
-    so they carry no fill price and are excluded rather than shown as a
-    marker with nothing meaningful to plot."""
+    """Every FILLED order for this bot, oldest first -- powers the entry/
+    exit markers on the bot's price chart, for SIMULATION and LIVE alike
+    (the chart itself is always visible; only the source table differs).
+    Terminal states other than FILLED (REJECTED, FAILED) never opened or
+    closed a real position, so they carry no fill price and are excluded
+    rather than shown as a marker with nothing meaningful to plot."""
     user_id = _current_user_id(current_user)
     session_factory = _session_factory()
     with session_factory() as session:
         bot = _get_owned_bot(session, user_id, bot_id)
-        if bot.execution_mode != BotExecutionMode.SIMULATION:
-            raise _not_available_for_live(bot)
+
+        if bot.execution_mode == BotExecutionMode.LIVE:
+            live_orders = session.scalars(
+                select(Order)
+                .where(Order.bot_id == bot.id, Order.status == OrderStatus.FILLED)
+                .order_by(Order.terminal_at.asc())
+            ).all()
+            return {
+                "available": True,
+                "execution_mode": bot.execution_mode.value,
+                "trades": [
+                    _live_order_to_trade_response(order) for order in live_orders
+                ],
+            }
 
         orders = session.scalars(
             select(SimulationOrder)

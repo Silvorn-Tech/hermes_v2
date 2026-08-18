@@ -597,6 +597,11 @@ def test_resume_goes_through_risk_validation(session: Session) -> None:
 def test_resume_insufficient_balance_is_rejected_not_a_crash(
     session: Session,
 ) -> None:
+    """A bot promoted from SIMULATION keeps whatever target_quantity it
+    last saved -- sized against that bot's virtual capital, with no
+    relationship to the real account balance. This must be caught by the
+    fast real-balance pre-check *before* ever reaching Binance's order
+    endpoint, not merely surfaced as a rejection somewhere downstream."""
     user = _make_user(session)
     session.commit()
     client = _FakeBinanceClient()
@@ -610,6 +615,27 @@ def test_resume_insufficient_balance_is_rejected_not_a_crash(
 
     assert result["status"] == "REJECTED"
     assert result["bot"]["status"] == "PAUSED"
+    assert "Insufficient real balance" in result["reason"]
+    assert client.create_order_calls == []
+
+
+def test_resume_real_balance_check_never_applies_to_a_simulation_bot(
+    session: Session,
+) -> None:
+    """The fast real-balance pre-check is LIVE-only -- a SIMULATION bot's
+    resume must never be rejected because the connected (or absent) real
+    Binance account happens to be empty."""
+    user = _make_user(session)
+    session.commit()
+    client = _FakeBinanceClient()
+    client.balances = [{"asset": "USDT", "free": "0", "locked": "0"}]
+    service = _make_service(session, client)
+    bot = _create_bot(service, user.id)["bot"]
+
+    result = service.resume(user.id, bot["id"], "resume-1")
+    session.commit()
+
+    assert result["status"] == "ACTIVE"
 
 
 def test_duplicate_resume_request_is_idempotent(session: Session) -> None:
