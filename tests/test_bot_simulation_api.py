@@ -306,6 +306,89 @@ def test_performance_route_is_not_available_for_live_bots(
     assert response.json()["detail"]["available"] is False
 
 
+# --- GET /bots/{id}/trades ------------------------------------------------------
+
+
+def test_trades_route_requires_authentication() -> None:
+    client = TestClient(app)
+    response = client.get("/bots/00000000-0000-0000-0000-000000000000/trades")
+    assert response.status_code == 401
+
+
+def test_trades_route_for_a_fresh_bot_is_empty(
+    authorized_client: tuple[TestClient, _FakeBinanceClient],
+) -> None:
+    client, _fake = authorized_client
+    create_response = client.post("/bots", json=_create_body(), headers=_headers())
+    bot_id = create_response.json()["bot"]["id"]
+
+    response = client.get(f"/bots/{bot_id}/trades")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["available"] is True
+    assert body["trades"] == []
+
+
+def test_trades_route_after_a_round_trip_lists_both_fills_oldest_first(
+    authorized_client: tuple[TestClient, _FakeBinanceClient],
+) -> None:
+    client, fake = authorized_client
+    create_response = client.post("/bots", json=_create_body(), headers=_headers())
+    bot_id = create_response.json()["bot"]["id"]
+
+    client.post(f"/bots/{bot_id}/resume", headers=_headers("resume-key"))
+    fake.market_data["BTCUSDT"] = {"last_price": "51000"}
+    client.post(f"/bots/{bot_id}/pause", headers=_headers("pause-key"))
+
+    response = client.get(f"/bots/{bot_id}/trades")
+    assert response.status_code == 200
+    trades = response.json()["trades"]
+    assert len(trades) == 2
+    assert trades[0]["side"] == "BUY"
+    assert Decimal(trades[0]["fill_price"]) == Decimal("50000")
+    assert trades[1]["side"] == "SELL"
+    assert Decimal(trades[1]["fill_price"]) == Decimal("51000")
+    assert trades[0]["terminal_at"] <= trades[1]["terminal_at"]
+
+
+def test_trades_route_excludes_a_rejected_order(
+    authorized_client: tuple[TestClient, _FakeBinanceClient],
+) -> None:
+    """A REJECTED order never filled -- no fill price to plot, so it must
+    not show up as a trade marker."""
+    client, _fake = authorized_client
+    create_response = client.post(
+        "/bots", json=_create_body(target_quantity="99999999"), headers=_headers()
+    )
+    bot_id = create_response.json()["bot"]["id"]
+
+    resume_response = client.post(
+        f"/bots/{bot_id}/resume", headers=_headers("resume-key")
+    )
+    assert resume_response.json()["status"] == "REJECTED"
+
+    response = client.get(f"/bots/{bot_id}/trades")
+    assert response.status_code == 200
+    assert response.json()["trades"] == []
+
+
+def test_trades_route_is_not_available_for_live_bots(
+    authorized_client: tuple[TestClient, _FakeBinanceClient],
+    db_session: Session,
+) -> None:
+    client, _fake = authorized_client
+    create_response = client.post("/bots", json=_create_body(), headers=_headers())
+    bot_id = create_response.json()["bot"]["id"]
+
+    bot = db_session.get(Bot, bot_id)
+    bot.execution_mode = BotExecutionMode.LIVE
+    db_session.commit()
+
+    response = client.get(f"/bots/{bot_id}/trades")
+    assert response.status_code == 409
+    assert response.json()["detail"]["available"] is False
+
+
 # --- Simulation is never visible through the real account endpoints ----------
 
 

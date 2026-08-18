@@ -65,6 +65,17 @@ class _FakeBinanceClient:
         self.exchange_info = {"BTCUSDT": _GOOD_EXCHANGE_INFO}
         self.balances = [{"asset": "USDT", "free": "100000", "locked": "0"}]
         self.trades: dict[str, list[dict]] = {}
+        self.klines: list[dict] = [
+            {
+                "open_time": 1700000000000,
+                "open": "49000",
+                "high": "50500",
+                "low": "48800",
+                "close": "50000",
+                "volume": "12.5",
+                "close_time": 1700000899999,
+            }
+        ]
         self.create_order_result = {
             "symbol": "BTCUSDT",
             "order_id": 555,
@@ -98,6 +109,9 @@ class _FakeBinanceClient:
 
     def get_exchange_info(self, symbol: str) -> dict:
         return self.exchange_info[symbol]
+
+    def get_klines(self, symbol: str, interval: str, limit: int) -> list[dict]:
+        return self.klines
 
     def get_balances(self) -> list[dict]:
         if self.balances_error is not None:
@@ -576,6 +590,49 @@ def test_get_exchange_info(
     assert body["filters"]["step_size"] == "0.0001"
 
 
+def test_get_klines(
+    authorized_client: tuple[TestClient, _FakeBinanceClient],
+) -> None:
+    client, _fake = authorized_client
+    response = client.get(
+        "/klines", params={"symbol": "btcusdt", "interval": "15m", "limit": 50}
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body == {
+        "symbol": "BTCUSDT",
+        "interval": "15m",
+        "candles": [
+            {
+                "open_time": 1700000000000,
+                "open": "49000",
+                "high": "50500",
+                "low": "48800",
+                "close": "50000",
+                "volume": "12.5",
+                "close_time": 1700000899999,
+            }
+        ],
+    }
+
+
+def test_get_klines_defaults_interval_and_limit(
+    authorized_client: tuple[TestClient, _FakeBinanceClient],
+) -> None:
+    client, _fake = authorized_client
+    response = client.get("/klines", params={"symbol": "BTCUSDT"})
+    assert response.status_code == 200
+    assert response.json()["interval"] == "15m"
+
+
+def test_get_klines_rejects_an_unlisted_interval(
+    authorized_client: tuple[TestClient, _FakeBinanceClient],
+) -> None:
+    client, _fake = authorized_client
+    response = client.get("/klines", params={"symbol": "BTCUSDT", "interval": "3m"})
+    assert response.status_code == 422
+
+
 # --- credential-less user (never connected a Binance account) -------------------
 
 
@@ -653,6 +710,16 @@ def test_exchange_info_still_works_without_credentials(
     require a connected account."""
     client, _fake = credential_less_client
     response = client.get("/exchange-info", params={"symbol": "BTCUSDT"})
+    assert response.status_code == 200
+
+
+def test_klines_still_works_without_credentials(
+    credential_less_client: tuple[TestClient, _FakeBinanceClient],
+) -> None:
+    """Same public, unsigned Binance endpoint as /market-data -- must never
+    require a connected account."""
+    client, _fake = credential_less_client
+    response = client.get("/klines", params={"symbol": "BTCUSDT"})
     assert response.status_code == 200
 
 

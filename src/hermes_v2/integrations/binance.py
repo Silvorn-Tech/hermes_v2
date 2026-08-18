@@ -145,13 +145,14 @@ def _extract_symbol_filters(symbol_info: dict[str, Any]) -> dict[str, Any]:
 class BinanceClient:
     """Minimal Binance REST client — reads plus the minimum write surface.
 
-    Exposes exactly eleven capabilities: the five read-only methods from
+    Exposes exactly thirteen capabilities: the five read-only methods from
     Phase 1 (`ping`, `get_account_info`, `get_balances`, `get_market_data`,
     `get_open_orders`) plus five added in Phase 2 (`create_order`,
     `cancel_order`, `get_order`, `get_trades`, `get_exchange_info`) plus
-    `get_api_key_permissions`, added to check a key's own withdrawal
-    permission rather than the account's overall eligibility. Nothing
-    that withdraws, transfers, or manages deposit addresses exists here or
+    `get_api_key_permissions` (checks a key's own withdrawal permission
+    rather than the account's overall eligibility) plus `get_klines`
+    (public OHLCV candlestick history, for charting). Nothing that
+    withdraws, transfers, or manages deposit addresses exists here or
     ever should.
     """
 
@@ -382,6 +383,36 @@ class BinanceClient:
             "low_price": payload.get("lowPrice"),
             "volume": payload.get("volume"),
         }
+
+    def get_klines(
+        self, symbol: str, interval: str, limit: int = 100
+    ) -> list[dict[str, Any]]:
+        """Public candlestick (OHLCV) history for `symbol`. No credentials
+        required or sent.
+
+        Binance returns each candle as a positional array
+        (`[open_time, open, high, low, close, volume, close_time, ...]`,
+        five more trailing fields this method has no use for) — curated
+        here into named fields the same way every other method in this
+        class curates its payload, so nothing downstream has to know
+        Binance's raw array shape.
+        """
+        payload = self._get(
+            "/api/v3/klines",
+            params={"symbol": symbol, "interval": interval, "limit": limit},
+        )
+        return [
+            {
+                "open_time": candle[0],
+                "open": candle[1],
+                "high": candle[2],
+                "low": candle[3],
+                "close": candle[4],
+                "volume": candle[5],
+                "close_time": candle[6],
+            }
+            for candle in payload
+        ]
 
     def get_open_orders(self, symbol: str | None = None) -> list[dict[str, Any]]:
         """Currently open orders."""

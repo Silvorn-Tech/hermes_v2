@@ -163,6 +163,44 @@ def test_get_api_key_permissions_signs_request_and_reads_enable_withdrawals() ->
     assert call["headers"] == {"X-MBX-APIKEY": _FAKE_API_KEY}
 
 
+def test_get_klines_curates_the_positional_array_into_named_fields() -> None:
+    payload = [
+        [
+            1499040000000,
+            "0.01634790",
+            "0.80000000",
+            "0.01575800",
+            "0.01577100",
+            "148976.11427815",
+            1499644799999,
+            "2434.19055334",  # quote asset volume -- must NOT leak into the result
+            308,  # number of trades -- must NOT leak into the result
+            "1756.87402397",
+            "28.46694368",
+            "0",
+        ]
+    ]
+    session = _FakeSession(response=_FakeResponse(json_data=payload))
+    client = _make_client(session)
+
+    result = client.get_klines("BTCUSDT", "15m", limit=1)
+
+    assert result == [
+        {
+            "open_time": 1499040000000,
+            "open": "0.01634790",
+            "high": "0.80000000",
+            "low": "0.01575800",
+            "close": "0.01577100",
+            "volume": "148976.11427815",
+            "close_time": 1499644799999,
+        }
+    ]
+    call = session.calls[0]
+    assert call["headers"] == {}
+    assert call["params"] == {"symbol": "BTCUSDT", "interval": "15m", "limit": 1}
+
+
 def test_get_balances_filters_zero_and_parses_fields() -> None:
     payload = {
         "balances": [
@@ -348,9 +386,10 @@ def test_credentials_never_appear_in_exceptions_or_logs(
 
 
 def test_client_exposes_no_write_beyond_orders() -> None:
-    """Whitelist, not an allowlist-by-omission: exactly these eleven methods
-    may exist on BinanceClient. Funds-movement methods (withdraw, transfer,
-    deposit address management) must never be added here, in any phase."""
+    """Whitelist, not an allowlist-by-omission: exactly these thirteen
+    methods may exist on BinanceClient. Funds-movement methods (withdraw,
+    transfer, deposit address management) must never be added here, in
+    any phase."""
     forbidden_names = {
         "withdraw",
         "transfer",
@@ -373,6 +412,7 @@ def test_client_exposes_no_write_beyond_orders() -> None:
         "get_balances",
         "get_market_data",
         "get_open_orders",
+        "get_klines",
         "create_order",
         "cancel_order",
         "get_order",

@@ -445,6 +445,39 @@ async def get_exchange_info_route(
         raise _http_exception_for_binance_error(exc) from exc
 
 
+_ALLOWED_KLINE_INTERVALS = frozenset({"1m", "5m", "15m", "1h", "4h", "1d"})
+_MAX_KLINE_LIMIT = 500
+
+
+@router.get("/klines")
+async def get_klines_route(
+    symbol: str = Query(..., min_length=1, max_length=20),
+    interval: str = Query("15m"),
+    limit: int = Query(200, ge=1, le=_MAX_KLINE_LIMIT),
+    current_user: dict = Depends(require_permission("portfolio.read")),
+) -> dict[str, Any]:
+    """Public OHLCV candlestick history for `symbol` -- powers the
+    price chart on a bot's detail screen. Same public, unsigned Binance
+    call as `/market-data`/`/exchange-info`; `interval` is restricted to
+    a fixed allowlist (never passed through raw) since it's the one
+    parameter here Binance itself doesn't validate before echoing back
+    in the response.
+    """
+    if interval not in _ALLOWED_KLINE_INTERVALS:
+        raise HTTPException(
+            status_code=422,
+            detail=(f"interval must be one of {sorted(_ALLOWED_KLINE_INTERVALS)}"),
+        )
+    client = _new_public_binance_client()
+    try:
+        candles = await run_in_threadpool(
+            client.get_klines, symbol.upper(), interval, limit
+        )
+    except BinanceError as exc:
+        raise _http_exception_for_binance_error(exc) from exc
+    return {"symbol": symbol.upper(), "interval": interval, "candles": candles}
+
+
 @router.get("/positions")
 async def get_positions(
     current_user: dict = Depends(require_permission("positions.read")),
