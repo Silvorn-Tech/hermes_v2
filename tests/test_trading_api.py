@@ -629,9 +629,7 @@ def test_get_klines_rejects_an_unlisted_interval(
     authorized_client: tuple[TestClient, _FakeBinanceClient],
 ) -> None:
     client, _fake = authorized_client
-    response = client.get(
-        "/klines", params={"symbol": "BTCUSDT", "interval": "3m"}
-    )
+    response = client.get("/klines", params={"symbol": "BTCUSDT", "interval": "3m"})
     assert response.status_code == 422
 
 

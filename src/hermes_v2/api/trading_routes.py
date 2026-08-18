@@ -445,9 +445,7 @@ async def get_exchange_info_route(
         raise _http_exception_for_binance_error(exc) from exc
 
 
-_ALLOWED_KLINE_INTERVALS = frozenset(
-    {"1m", "5m", "15m", "1h", "4h", "1d"}
-)
+_ALLOWED_KLINE_INTERVALS = frozenset({"1m", "5m", "15m", "1h", "4h", "1d"})
 _MAX_KLINE_LIMIT = 500
 
 
@@ -468,9 +466,7 @@ async def get_klines_route(
     if interval not in _ALLOWED_KLINE_INTERVALS:
         raise HTTPException(
             status_code=422,
-            detail=(
-                f"interval must be one of {sorted(_ALLOWED_KLINE_INTERVALS)}"
-            ),
+            detail=(f"interval must be one of {sorted(_ALLOWED_KLINE_INTERVALS)}"),
         )
     client = _new_public_binance_client()
     try:
