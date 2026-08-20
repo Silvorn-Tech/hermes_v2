@@ -35,7 +35,7 @@ readonly SERVICE_NAME="hermes-v2-deploy"
 # notifications land in one place. Subscribe via the ntfy app or
 # https://ntfy.sh/<topic>. Rotate by changing this constant (in both
 # repos, to keep them sharing one feed) and re-running each script.
-readonly NTFY_TOPIC="hermes-deploys-600e21984f3a"
+readonly NTFY_TOPIC="hermes-deploys-389525f241fb"
 
 mkdir -p "$APP_DIR"
 
@@ -47,8 +47,18 @@ services:
     restart: unless-stopped
     env_file:
       - .env
+    # Compose reads /opt/hermes-v2/.env for this substitution too (its own
+    # built-in ".env next to the compose file" lookup, separate from the
+    # env_file: line above which only injects into the container) -- so an
+    # operator can add HERMES_BIND_ADDRESS=127.0.0.1 (or a Tailscale IP) to
+    # that already-existing file to stop publishing this port on every
+    # interface, without editing this generated file by hand. Left at
+    # 0.0.0.0 by default so re-running this script never silently changes
+    # how ROMEO is actually reached -- this repo has no way to know
+    # ROMEO's real network topology (firewall, Tailscale, etc.), so it
+    # can't safely pick a stricter default for you.
     ports:
-      - "8000:8000"
+      - "${HERMES_BIND_ADDRESS:-0.0.0.0}:8000:8000"
     depends_on:
       postgres:
         condition: service_healthy
@@ -89,7 +99,7 @@ readonly CONTAINER_NAME="hermes-v2"
 readonly IMAGE="ghcr.io/silvorn-tech/hermes_v2:latest"
 readonly PRE_DEPLOY_HOOK="/opt/hermes-v2/can-deploy"
 readonly LOCK_FILE="/run/hermes-v2-deploy/deploy.lock"
-readonly NTFY_TOPIC="hermes-deploys-600e21984f3a"
+readonly NTFY_TOPIC="hermes-deploys-389525f241fb"
 
 log() {
   printf '%s %s\n' "$(/usr/bin/date --iso-8601=seconds)" "$*"
@@ -261,4 +271,10 @@ Reminders:
   unknown" on the first tick, GHCR either has no image yet or the
   hermes-deploy user's stored GHCR login lacks read:packages on
   hermes_v2 specifically.
+- hermes-v2's port 8000 is published on 0.0.0.0 by default. If this host
+  is reachable from anywhere you don't want port 8000 open on, add
+  HERMES_BIND_ADDRESS=127.0.0.1 (or a specific Tailscale/private IP) to
+  /opt/hermes-v2/.env and re-run `docker compose up -d` for it to take
+  effect -- this script can't verify ROMEO's real network exposure, so
+  it never assumes one for you.
 NEXT
