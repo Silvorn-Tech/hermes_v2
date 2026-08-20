@@ -76,16 +76,14 @@ class HermesRuntime:
             self._snapshot_scheduler.stop()
 
     def _initialize(self) -> None:
-        """Initialize runtime dependencies."""
+        """Initialize runtime dependencies.
 
-        # Future:
-        # - database
-        # - configuration
-        # - Telegram integration
-        # - market data
-        # - strategy engine
-        # - risk engine
-        pass
+        Left as a no-op: every dependency this once stubbed out (database,
+        configuration, risk engine, Binance integration) now initializes
+        itself where it's actually used (route dependencies, service
+        constructors), not here. Kept as an explicit extension point for
+        anything that genuinely needs to run once at process startup.
+        """
 
     def _install_signal_handlers(self) -> None:
         signal.signal(signal.SIGTERM, self._handle_shutdown)
